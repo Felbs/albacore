@@ -50,7 +50,7 @@ class NRSC5CLI:
         parser.add_argument("-p", metavar="ppm-error", type=int)
         parser.add_argument("-g", metavar="gain", type=float)
         input_group.add_argument("-r", metavar="iq-input")
-        parser.add_argument("--iq-input-format", choices=["cu8", "cs16"], default="cu8")
+        parser.add_argument("--iq-input-format", choices=["cu8", "cs16"])
         parser.add_argument("-w", metavar="iq-output")
         parser.add_argument("-o", metavar="audio-output")
         parser.add_argument("-t", choices=["wav", "raw"], default="wav")
@@ -64,6 +64,12 @@ class NRSC5CLI:
 
         if self.args.frequency and self.args.frequency < 10000:
             self.args.frequency *= 1e6
+
+        if self.args.r and not self.args.iq_input_format:
+            if self.args.r.endswith(".cs16"):
+                self.args.iq_input_format = "cs16"
+            else:
+                self.args.iq_input_format = "cu8"
 
     def run(self):
         logging.basicConfig(level=self.args.l * 10,

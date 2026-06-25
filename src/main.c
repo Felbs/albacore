@@ -53,6 +53,7 @@ typedef struct buffer_t {
 } audio_buffer_t;
 
 enum iq_format {
+    IQ_FORMAT_NONE,
     IQ_FORMAT_CU8,
     IQ_FORMAT_CS16
 };
@@ -815,7 +816,7 @@ static int parse_args(state_t *st, int argc, char *argv[])
     st->bias_tee = 0;
     st->direct_sampling = -1;
     st->ppm_error = INT_MIN;
-    st->iq_input_format = IQ_FORMAT_CU8;
+    st->iq_input_format = IQ_FORMAT_NONE;
     log_set_level(LOG_INFO);
 
     while ((opt = getopt_long(argc, argv, "r:w:o:t:d:p:g:ql:vH:TD:", long_opts, NULL)) != -1)
@@ -920,6 +921,17 @@ static int parse_args(state_t *st, int argc, char *argv[])
         // compatibility with previous versions
         if (st->freq < 10000.0f)
             st->freq *= 1e6f;
+    }
+
+    if (st->input_name && (st->iq_input_format == IQ_FORMAT_NONE))
+    {
+        const char *suffix = ".cs16";
+        size_t suffix_len = strlen(suffix);
+        size_t len = strlen(st->input_name);
+        if ((len >= suffix_len) && (strcmp(st->input_name + len - suffix_len, suffix) == 0))
+            st->iq_input_format = IQ_FORMAT_CS16;
+        else
+            st->iq_input_format = IQ_FORMAT_CU8;
     }
 
     st->program = strtoul(argv[optind++], &endptr, 0);
