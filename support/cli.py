@@ -50,7 +50,7 @@ class NRSC5CLI:
         parser.add_argument("-p", metavar="ppm-error", type=int)
         parser.add_argument("-g", metavar="gain", type=float)
         input_group.add_argument("-r", metavar="iq-input")
-        parser.add_argument("--iq-input-format", choices=["cu8", "cs16"])
+        parser.add_argument("--iq-input-format", choices=["cu8", "cs16", "cf32"])
         parser.add_argument("-w", metavar="iq-output")
         parser.add_argument("-o", metavar="audio-output")
         parser.add_argument("-t", choices=["wav", "raw"], default="wav")
@@ -68,6 +68,8 @@ class NRSC5CLI:
         if self.args.r and not self.args.iq_input_format:
             if self.args.r.endswith(".cs16"):
                 self.args.iq_input_format = "cs16"
+            elif self.args.r.endswith(".cf32"):
+                self.args.iq_input_format = "cf32"
             else:
                 self.args.iq_input_format = "cu8"
 
@@ -137,6 +139,8 @@ class NRSC5CLI:
                         self.radio.pipe_samples_cu8(data)
                     elif self.args.iq_input_format == "cs16":
                         self.radio.pipe_samples_cs16(data)
+                    elif self.args.iq_input_format == "cf32":
+                        self.radio.pipe_samples_cf32(data)
             else:
                 with self.device_condition:
                     self.device_condition.wait()

@@ -50,8 +50,10 @@ class EventType(enum.Enum):
 AUDIO_FRAME_SAMPLES = 2048
 
 SAMPLE_RATE_CU8 = 1488375
-SAMPLE_RATE_CS16_FM = 744187.5
-SAMPLE_RATE_CS16_AM = 46511.71875
+SAMPLE_RATE_NATIVE_FM = 744187.5
+SAMPLE_RATE_NATIVE_AM = 46511.71875
+SAMPLE_RATE_CS16_FM = SAMPLE_RATE_NATIVE_FM
+SAMPLE_RATE_CS16_AM = SAMPLE_RATE_NATIVE_AM
 SAMPLE_RATE_AUDIO = 44100
 
 DEVICE_VERSION_LENGTH = 4
@@ -1060,5 +1062,12 @@ class NRSC5:
         if len(samples) % 2 != 0:
             raise NRSC5Error("len(samples) must be a multiple of 2.")
         result = NRSC5.libnrsc5.nrsc5_pipe_samples_cs16(self.radio, samples, len(samples) // 2)
+        if result != 0:
+            raise NRSC5Error("Failed to pipe samples.")
+
+    def pipe_samples_cf32(self, samples):
+        if len(samples) % 8 != 0:
+            raise NRSC5Error("len(samples) must be a multiple of 8.")
+        result = NRSC5.libnrsc5.nrsc5_pipe_samples_cf32(self.radio, samples, len(samples) // 4)
         if result != 0:
             raise NRSC5Error("Failed to pipe samples.")

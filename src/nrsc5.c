@@ -649,6 +649,17 @@ int nrsc5_pipe_samples_cs16(nrsc5_t *st, const int16_t *samples, unsigned int le
     return 0;
 }
 
+int nrsc5_pipe_samples_cf32(nrsc5_t *st, const float *samples, unsigned int length)
+{
+    if (length % 2 != 0)
+    {
+        return -1;
+    }
+
+    input_push_cf32(&st->input, samples, length);
+    return 0;
+}
+
 void nrsc5_report(nrsc5_t *st, const nrsc5_event_t *evt)
 {
     if (st->callback)
