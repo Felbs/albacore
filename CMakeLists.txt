@@ -192,7 +192,7 @@ if (BUILD_CLI AND NOT USE_SYSTEM_LIBAO)
     ExternalProject_Add (
         libao_external
         TIMEOUT 120
-        GIT_REPOSITORY "https://gitlab.xiph.org/xiph/libao.git"
+        GIT_REPOSITORY "https://github.com/xiph/libao.git"
         GIT_TAG cafce902a73c1050474a62feff83e428bbbee5f4
         PREFIX ${LIBAO_PREFIX}
 
