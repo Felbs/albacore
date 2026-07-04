@@ -423,8 +423,8 @@ struct nrsc5_event_t
             float cber;
         } ber;
         struct {
-            float lower;
-            float upper;
+            float lower;  /**< Modulation error ratio of the lower sideband in dB. Note that the NRSC-5 standard defines FM signals to be spectrally inverted, so the lower sideband is the one that is higher in frequency. AM signals are not inverted. */
+            float upper;  /**< Modulation error ratio of the upper sideband in dB. Note that the NRSC-5 standard defines FM signals to be spectrally inverted, so the upper sideband is the one that is lower in frequency. AM signals are not inverted. */
         } mer;
         struct {
             unsigned int program;
