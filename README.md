@@ -198,6 +198,15 @@ behavior unchanged. nrsc5's printed BER is a pre-FEC channel metric
 and barely moves with soft-decision changes — judge A/Bs on decoded
 audio seconds instead.
 
+**Field-validated the same evening** on a live capture of a station
+with real one-sided sideband damage (`lab/hd_field_survey.py`): during
+a natural fade the pair decoded 9 s of audio where stock produced
+zero, and on a 90 s specimen nudged to the cliff with mild AWGN the
+pair was worth ~2 dB of margin — at +2 dB added noise, stock decodes
+nothing and the pair delivers 49 s of music. Replay A/B on identical
+captures is the only honest field protocol; live conditions swing
+minute to minute.
+
 ## Building
 
 Unchanged from upstream for now — see
