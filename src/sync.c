@@ -600,11 +600,29 @@ void sync_process_fm(sync_t *st)
         }
         if (part_weight)
         {
+            // ALBACORE_ERASE=<floor>: partitions whose weight lands at or
+            // below <floor> are output as EXACT soft-zeros (true Viterbi
+            // erasure) instead of weak +/-1s. 0 disables (default).
+            static float erase_floor = -1;
+            if (erase_floor < 0)
+            {
+                const char *ef = getenv("ALBACORE_ERASE");
+                erase_floor = ef ? (float)atof(ef) : 0;
+                if (erase_floor < 0)
+                    erase_floor = 0;
+            }
             const float sig_p = 2.0f * BLKSZ * (float)PARTITION_DATA_CARRIERS;
             for (i = 0; (int)i < partitions_per_band; i++)
             {
                 mult_lb_part[i] = fmaxf(fminf(sig_p / error_lb_part[i] * 10, 127), 1);
                 mult_ub_part[i] = fmaxf(fminf(sig_p / error_ub_part[i] * 10, 127), 1);
+                if (erase_floor > 0)
+                {
+                    if (mult_lb_part[i] <= erase_floor)
+                        mult_lb_part[i] = 0;
+                    if (mult_ub_part[i] <= erase_floor)
+                        mult_ub_part[i] = 0;
+                }
             }
             static int dbg = -1;
             if (dbg < 0)

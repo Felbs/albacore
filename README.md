@@ -198,6 +198,13 @@ behavior unchanged. nrsc5's printed BER is a pre-FEC channel metric
 and barely moves with soft-decision changes — judge A/Bs on decoded
 audio seconds instead.
 
+Stage-2 addendum: `ALBACORE_ERASE=2` (with the pair) turns partitions
+whose confidence floors out into exact soft-zero Viterbi erasures
+instead of weak ±1s. Gentle floors are a small free win (one +10%
+audio case, never worse in testing); aggressive floors (5+) destroy
+decodes — the Viterbi still extracts value from weight-1 bits unless
+they're actively misleading. Default off.
+
 **Field-validated the same evening** on a live capture of a station
 with real one-sided sideband damage (`lab/hd_field_survey.py`): during
 a natural fade the pair decoded 9 s of audio where stock produced
