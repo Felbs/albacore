@@ -49,6 +49,113 @@ against stock nrsc5 on frozen cliff-edge IQ captures:
    calibration against the dials, learned and re-learned forever
    (the Knob of Time; HD provably has hour-curves too).
 
+## The grid, and how we found it
+
+*A field log for radio engineers. The waveform is fully documented in
+NRSC-5 (and in upstream's source), but we wanted to find it the way
+you'd find an undocumented one — measure first, read the spec as a
+referee afterward. That discipline caught real bugs in our own
+receiver math, and the dead ends are the educational part.*
+
+### What the FM IBOC grid is
+
+Hybrid FM HD Radio is OFDM hiding in the shoulders of an ordinary
+analog FM broadcast. All parameters below are at nrsc5's native
+complex rate of 744,187.5 Hz (= 135/64 × 352,800):
+
+| Parameter | Value |
+|---|---|
+| FFT length (useful symbol) | 2048 samples |
+| Guard interval | 112 samples — **tapered, not a plain CP** |
+| Total symbol | 2160 samples → 344.53 symbols/s (2.902 ms) |
+| Subcarrier spacing | 744187.5 / 2048 = **363.373 Hz** |
+| Active subcarriers (hybrid MP1) | ±356…±546 → sidebands at ±129.4…±198.4 kHz |
+| Partition | 19 subcarriers = 18 data + 1 reference |
+| Reference subcarriers | every 19th: ±356, ±375, … ±546 (11 per sideband) |
+| Reference modulation | DBPSK, a known 32-bit word per L1 block |
+| L1 block / frame | 32 symbols / 16 blocks (512 symbols, 1.486 s) |
+
+The digital sidebands sit ~20 dB below the analog FM host and ride
+out beyond ±129 kHz where the analog energy has died off. Extended
+service modes (MP2/MP3/MP11…) add partitions *inward* toward the
+analog host; the outer reference comb stays put, which makes it the
+universal handle across modes.
+
+### Dead end #1: cyclic-prefix autocorrelation
+
+The textbook OFDM blind-acquisition move — correlate the signal with
+itself delayed by the FFT length, look for the guard-interval ridge —
+returned metrics indistinguishable from noise. Not a bug: **NRSC-5's
+guard is not a copy.** The transmitter applies a raised-sine ramp
+over the 112-sample guard region and overlap-adds adjacent symbols
+(windowed OFDM, for spectral containment next to the analog host).
+There is no clean repeated segment to correlate against, only a
+tapered crossfade. Upstream nrsc5 uses the guard correlation just
+once, coarsely, at acquisition — then hands everything to the
+reference subcarriers. Lesson: **on this waveform, the refs are the
+acquisition tool, not the CP.**
+
+### Dead end #2: finding the reference comb by power
+
+On TV (ATSC) the pilot is boosted, so a power spectrum betrays it.
+Here the reference subcarriers transmit at the *same* power as data
+subcarriers — an averaged PSD shows two smooth 70-kHz-wide shoulders
+with no comb structure at all. Power tells you the sidebands exist
+(and locates their edges to ±1 bin, which is how we confirmed the
+grid-to-FFT-bin alignment); it cannot find the refs. Only their
+*modulation* distinguishes them.
+
+### What worked: DBPSK-ness of the reference diff products
+
+Capture at exactly 4× native (2,976,750 S/s) so one FFT bin = one
+subcarrier with no resampling. Then hypothesize (symbol timing t₀ ×
+fractional CFO × integer-bin CFO) and score each hypothesis by how
+DBPSK-like the 22 reference bins are across consecutive symbols:
+
+    d[s,j] = R[s,j] · conj(R[s−1,j])      (diff product per ref j)
+    metric = (Σ|Re d| − Σ|Im d|) / Σ|d|   (≈0 for noise, →1 locked)
+
+One full FFT per candidate window serves every integer-CFO hypothesis
+(shift the ref comb, not the signal), so the 3-D search is cheap.
+
+Two subtleties earned their scars:
+
+1. **OFDM symbols restart phase at every symbol start.** If you model
+   a subcarrier as a continuous tone, you'll derive a per-symbol
+   phase advance of 2πk·112/2048 from the guard stride and
+   "compensate" for it — scrambling each reference by a different
+   constant angle and burying the lock in noise. Each symbol is an
+   independent cyclic block; the diff products are already ±real.
+   (This one bug cost the first afternoon. A synthetic transmitter
+   with known truth found it in minutes — build the synthetic first.)
+2. **Residual CFO rotates all diff products by one common angle**
+   (2π·Δf·T_sym). It's sign-invariant under DBPSK, so estimate it
+   blindly as ½·arg(Σd²) and derotate before scoring. The metric then
+   self-corrects for most of a subcarrier spacing of CFO error, and
+   the angle hands you a free fine-CFO estimate.
+
+Block alignment falls out afterward: differentially decode each ref's
+bit stream and cyclically correlate against the known bits of the
+32-bit block word (`sync.c` in the source keeps seven fixed bits plus
+structure; the wrap bit is known too). Chance is 0.5; a real lock
+scores ~1.0.
+
+### Validation against the referee
+
+On a strong local station the whole chain agrees with stock nrsc5 run
+on the same capture: our refined CFO came out **+75.0 Hz** and nrsc5
+reported **"Frequency offset: 75 Hz"**; block-word correlation hit
+1.000. On a specimen with a dead lower sideband the per-ref dial
+immediately showed asymmetric MER with a frequency-selective dip —
+the exact information a sideband-combining loop (campaign stage 3)
+needs and a stock receiver discards.
+
+The lab scripts live in [`lab/`](lab/): `hd_ref_lock.py` (the
+search + lock + per-ref MER dial + H(f,t) extraction),
+`hd_grid_diag.py` (PSD shoulder/edge diagnostics), and
+`hd_synth_test.py` (the synthetic transmitter that keeps the math
+honest).
+
 ## Status
 
 Campaign opened 2026-07-18, the same day the family's radiosonde
