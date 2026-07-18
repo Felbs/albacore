@@ -145,10 +145,29 @@ scores ~1.0.
 On a strong local station the whole chain agrees with stock nrsc5 run
 on the same capture: our refined CFO came out **+75.0 Hz** and nrsc5
 reported **"Frequency offset: 75 Hz"**; block-word correlation hit
-1.000. On a specimen with a dead lower sideband the per-ref dial
-immediately showed asymmetric MER with a frequency-selective dip —
-the exact information a sideband-combining loop (campaign stage 3)
-needs and a stock receiver discards.
+1.000. On a cliff specimen the per-ref MER dial matched nrsc5's
+per-sideband MER within tenths of a dB.
+
+Two estimator lessons the referee taught us:
+
+- **Don't fold.** A first MER estimator removed the DBPSK modulation
+  with `sign(Re)` before measuring scatter. Folded noise doesn't read
+  as no-signal — it reads as a ~6–7 dB pseudo-floor, and the dial goes
+  *non-monotonic* at low SNR (a dead sideband out-scored a weak live
+  one). The fix: after block alignment the training-word bits are
+  known, so average diff products coherently with known signs — pure
+  noise then correctly reads −∞. Expect the diff-product estimator to
+  sit ~3 dB below a per-symbol MER at low SNR (noise doubles in the
+  product).
+- **Referee labels can lie.** On one asymmetric specimen our dial and
+  nrsc5 ranked the sidebands oppositely. A surgical A/B — null one
+  sideband in software, feed both versions to nrsc5 — showed stock
+  nrsc5's lower/upper MER labels are **spectrally inverted** with
+  respect to its cu8 baseband input (kill negative frequencies and
+  its "upper" craters). Our dial had the physics right: that station's
+  upper RF sideband is buried under the first-adjacent neighbor's
+  analog splatter — strong in power, ruinous in MER, precisely what a
+  sideband-combining loop needs to know.
 
 The lab scripts live in [`lab/`](lab/): `hd_ref_lock.py` (the
 search + lock + per-ref MER dial + H(f,t) extraction),

@@ -153,13 +153,43 @@ def block_align(d):
     return int(np.argmax(scores)), scores
 
 
-def per_ref_mer(d):
-    """MER dial per reference subcarrier from compensated diff products."""
-    u = d / (np.abs(d) + 1e-12)
-    v = u * np.sign(u.real + 1e-12)          # fold DBPSK modulation
-    err = np.abs(v.imag) ** 2 + (v.real - np.abs(v.real).mean(0)) ** 2
-    p_err = err.mean(axis=0)
-    return -10.0 * np.log10(np.maximum(p_err, 1e-6))
+def per_ref_mer(d, off):
+    """Unbiased MER dial per ref, via KNOWN training-word bits.
+
+    Folding by sign(Re) biases hard at low SNR (pure noise folds to a
+    ~6-7 dB pseudo-floor and the dial goes non-monotonic — caught when
+    nrsc5's per-sideband MER ordered 91.9's sidebands the other way).
+    Instead: at block-word positions where consecutive needle bits are
+    known, the expected sign of Re(d) is known — average coherently.
+    Pure noise then correctly reads -inf.
+    """
+    S = d.shape[0]
+    exp_sign = np.zeros(S, np.float32)
+    for n in range(BLKSZ):
+        if NEEDLE[n] >= 0 and NEEDLE[(n - 1) % BLKSZ] >= 0:
+            want = NEEDLE[n] ^ NEEDLE[(n - 1) % BLKSZ]
+            s0 = (n - 1 - off) % BLKSZ
+            exp_sign[s0::BLKSZ] = 1.0 if want == 0 else -1.0
+    sel = exp_sign != 0
+    c = d * exp_sign[:, None]           # zeroed rows dropped per block below
+    # Phase-tolerant: channel phase wanders over seconds (nrsc5 tracks it
+    # with per-ref Costas loops); assume coherence only WITHIN each
+    # 32-symbol block (93 ms). Signal power from per-block means, unbiased
+    # by the mean's own noise; noise from within-block scatter.
+    n_blk = d.shape[0] // BLKSZ
+    mus, var_acc, cnt = [], np.zeros(d.shape[1]), 0
+    for b in range(n_blk):
+        cb = c[b * BLKSZ:(b + 1) * BLKSZ]
+        cb = cb[sel[b * BLKSZ:(b + 1) * BLKSZ] != 0]
+        if len(cb) < 4:
+            continue
+        mu_b = cb.mean(axis=0)
+        var_acc += (np.abs(cb - mu_b[None, :]) ** 2).sum(axis=0)
+        cnt += len(cb) - 1
+        mus.append((mu_b, len(cb)))
+    var = var_acc / max(cnt, 1)
+    sig = np.mean([np.abs(mu) ** 2 - var / k for mu, k in mus], axis=0)
+    return 10.0 * np.log10(np.maximum(sig, 1e-12) / np.maximum(var, 1e-12) + 1e-9)
 
 
 def main():
@@ -200,10 +230,17 @@ def main():
     print(f"block align: offset={off} score={scores[off]:.3f} "
           f"(runner-up {sorted(scores)[-2]:.3f}, chance 0.5)")
 
-    mer = per_ref_mer(d)
+    mer = per_ref_mer(d, off)
     print("per-ref MER (dB):")
     for sc, m in zip(REF_SC, mer):
         print(f"  sc {sc:+4d} ({sc*SC_SPACING/1000.:+7.1f} kHz): {m:5.1f}")
+    lsb, usb = mer[REF_SC < 0], mer[REF_SC > 0]
+    # LSB/USB here = negative/positive baseband frequency of the capture
+    # (= lower/upper RF for a non-inverting SDR). NOTE: stock nrsc5's
+    # lower/upper MER labels are spectrally INVERTED w.r.t. its cu8 input
+    # (verified 7/18 by nulling one sideband: kill negative freqs -> its
+    # "upper" craters). When cross-checking: our LSB ~ nrsc5 "upper".
+    print(f"sideband medians: LSB {np.median(lsb):.1f} dB, USB {np.median(usb):.1f} dB")
 
     report = {
         "capture": cap.name, "t_start": a.t_start, "fs": FS,
@@ -229,7 +266,9 @@ def main():
                xlabel="t0 (samples)", ylabel="integer CFO (bins)")
         fig.colorbar(im, ax=ax)
         ax = axes[0, 1]
-        ax.plot(REF_SC * SC_SPACING / 1e3, mer, "o-")
+        neg, pos = REF_SC < 0, REF_SC > 0
+        ax.plot(REF_SC[neg] * SC_SPACING / 1e3, mer[neg], "o-", color="C0")
+        ax.plot(REF_SC[pos] * SC_SPACING / 1e3, mer[pos], "o-", color="C0")
         ax.set(title="per-ref MER dial", xlabel="offset (kHz)", ylabel="MER (dB)")
         ax.grid(True, alpha=.3)
         ax = axes[1, 0]
