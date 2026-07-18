@@ -177,11 +177,26 @@ honest).
 
 ## Status
 
-Campaign opened 2026-07-18, the same day the family's radiosonde
-decoder got its first CRC-verified balloon. Cliff-edge IQ corpus
-(the training data: stations at 7–10 dB MER, where every improvement
-is audible) is being collected by the observatory now. Code changes
-land here as each stage passes its A/B.
+Campaign opened 2026-07-18; by that evening the fork was building
+(MSYS2/MinGW64 on Windows — build the `faad2_external` and
+`rtlsdr_external` targets before the main build) and the first two
+decoder knobs had passed their A/B:
+
+- `ALBACORE_ROBUST_TRACK=1` — median/MAD-trimmed tracking estimators.
+  Stock's mean-based global phase correction feeds back into every
+  reference subcarrier's Costas loop, so a few interference-poisoned
+  refs collapse the whole receiver; the trimmed estimators don't.
+- `ALBACORE_PART_WEIGHT=1` — soft-demod confidence per 19-carrier
+  partition instead of per sideband (10× finer).
+
+Both default off; with knobs off the binary's output is byte-identical
+to stock. **Ship them as a pair**: alone, each is inert or erratic;
+together, on a cliff-edge capture with a one-partition +15 dB jammer
+(the `lab/hd_ladder.py` harness), they took stock's 26.9 s of decoded
+audio across six trials to 100.3 s — a 3.7× rescue, with clean-signal
+behavior unchanged. nrsc5's printed BER is a pre-FEC channel metric
+and barely moves with soft-decision changes — judge A/Bs on decoded
+audio seconds instead.
 
 ## Building
 
