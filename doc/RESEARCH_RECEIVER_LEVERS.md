@@ -70,6 +70,28 @@ docs, and the 802.11a CSI-weighting literature.
   counters), now confirmed twice in one night (concealment-silence discovery;
   playback-layer static).
 
+## Lever #1 implemented and measured (2026-07-19, same night)
+
+`ALBACORE_CSI=1` — per-subcarrier |G|²/partition-mean weighting on the soft
+bits, using the interpolated channel gain the equalizer already computes
+(clamped [1/8, 4]). Byte-identical with the gate off. **Measured verdict on
+the full synthetic battery (AWGN ladder, partition jam, 4-bin within-partition
+jam, two-ray sweeping-notch fading): SAFE but NEUTRAL — ties the knob pair
+everywhere, no separation even at the fading cliff.** The FEC+interleaver
+absorbs narrow damage regardless of weighting, and the robust-tracking pair
+already extracts the channel's available margin. The literature's ~10 dB
+figure evidently lives on faster/deeper mobile fading than this battery (or
+this market) produces. Keep the knob; revisit with real mobile-fade captures.
+
+**The night's actual headline came from the same experiment**: on the two-ray
+fading channel (0.9 echo, 0.8 Hz doppler), stock nrsc5 collapses at +3 dB
+added noise (9/27 real seconds, then 0) while **the ALBACORE=1 pair holds a
+PERFECT 27/27 real listenable seconds through +8 dB — ≥5 dB of margin on
+fading channels**, the pair's third proven channel class (AWGN-neutral,
+jam-rescue, fading-rescue). Mechanism consistent throughout: notch-swept
+reference subcarriers derail the mean-based tracking feedback; median/MAD
+estimators don't care.
+
 ## Open questions carried forward
 - How much of the ~10 dB CSI gain survives at NRSC-5 cliff SNR (802.11a figure
   is at BER 1e-5)? Answer: replay A/B on the hd_cliff corpus.

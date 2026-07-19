@@ -280,6 +280,14 @@ static float calc_smag(sync_t *st, unsigned int ref)
     return sum / BLKSZ;
 }
 
+// albacore: |interpolated channel gain|^2 per (carrier, block symbol),
+// captured during equalization for CSI-weighted branch metrics
+// (ALBACORE_CSI=1). Zero-forcing equalization divides by the gain and
+// AMPLIFIES noise on faded carriers; CSI weighting re-weights each
+// carrier's soft bits by its post-equalization reliability (|H|^2),
+// per the reference-receiver architecture (US7724850 family).
+static float alb_g2[FFT_FM][BLKSZ];
+
 static void adjust_data(sync_t *st, unsigned int lower, unsigned int upper)
 {
     float smag0, smag19;
@@ -293,10 +301,12 @@ static void adjust_data(sync_t *st, unsigned int lower, unsigned int upper)
 
         for (int k = 1; k < PARTITION_WIDTH_FM; k++)
         {
+            float complex gain = k * smag19 * upper_phase + (PARTITION_WIDTH_FM - k) * smag0 * lower_phase;
             // average phase difference
-            float complex C = CMPLXF(PARTITION_WIDTH_FM, PARTITION_WIDTH_FM) / (k * smag19 * upper_phase + (PARTITION_WIDTH_FM - k) * smag0 * lower_phase);
+            float complex C = CMPLXF(PARTITION_WIDTH_FM, PARTITION_WIDTH_FM) / gain;
             // adjust sample
             st->buffer[lower + k][n] *= C;
+            alb_g2[lower + k][n] = normf(gain);
         }
     }
 }
@@ -532,9 +542,11 @@ void sync_process_fm(sync_t *st)
         }
 
         // Calculate modulation error (per partition, for albacore's
-        // optional per-partition confidence weighting)
+        // optional per-partition confidence weighting) + per-partition
+        // mean |gain|^2 (for ALBACORE_CSI per-carrier weighting)
         float error_lb = 0, error_ub = 0;
         float error_lb_part[16] = {0}, error_ub_part[16] = {0};
+        float g2_lb_part[16] = {0}, g2_ub_part[16] = {0};
         for (int n = 0; n < BLKSZ; n++)
         {
             float complex c, ideal;
@@ -547,12 +559,19 @@ void sync_process_fm(sync_t *st)
                     c = st->buffer[LB_START + i + j][n];
                     ideal = CMPLXF(crealf(c) >= 0 ? 1 : -1, cimagf(c) >= 0 ? 1 : -1);
                     error_lb_part[p] += normf(ideal - c);
+                    g2_lb_part[p] += alb_g2[LB_START + i + j][n];
 
                     c = st->buffer[UB_END - i - PARTITION_WIDTH_FM + j][n];
                     ideal = CMPLXF(crealf(c) >= 0 ? 1 : -1, cimagf(c) >= 0 ? 1 : -1);
                     error_ub_part[p] += normf(ideal - c);
+                    g2_ub_part[p] += alb_g2[UB_END - i - PARTITION_WIDTH_FM + j][n];
                 }
             }
+        }
+        for (i = 0; (int)i < partitions_per_band; i++)
+        {
+            g2_lb_part[i] /= (PARTITION_DATA_CARRIERS * BLKSZ);
+            g2_ub_part[i] /= (PARTITION_DATA_CARRIERS * BLKSZ);
         }
         for (i = 0; i < partitions_per_band; i++)
         {
@@ -655,6 +674,22 @@ void sync_process_fm(sync_t *st)
 #define ALB_PLB(chunk) mult_lb_part[((chunk) - LB_START) / PARTITION_WIDTH_FM]
 #define ALB_PUB(chunk) mult_ub_part[(UB_END - (chunk)) / PARTITION_WIDTH_FM - 1]
 
+        // albacore: ALBACORE_CSI=1 — per-SUBCARRIER CSI weighting on top of
+        // the partition/sideband mult: scale each carrier's soft bits by
+        // |G_k|^2 relative to its partition mean (post-ZF reliability).
+        // Scale clamped to [1/8, 4] so a single bad estimate can't erase
+        // or rail a carrier on its own.
+        static int csi_on = -1;
+        if (csi_on < 0)
+        {
+            const char *cs = getenv("ALBACORE_CSI");
+            csi_on = (cs && atoi(cs) != 0) ? 1 : 0;
+        }
+#define ALB_CSI(mult, car, sym, g2mean) \
+        (csi_on ? fminf((mult) * fmaxf(fminf(alb_g2[(car)][(sym)] / ((g2mean) + 1e-9f), 4.0f), 0.125f), 127.0f) : (mult))
+#define ALB_WLB(chunk, car, sym) ALB_CSI(ALB_PLB(chunk), (car), (sym), g2_lb_part[((chunk) - LB_START) / PARTITION_WIDTH_FM])
+#define ALB_WUB(chunk, car, sym) ALB_CSI(ALB_PUB(chunk), (car), (sym), g2_ub_part[(UB_END - (chunk)) / PARTITION_WIDTH_FM - 1])
+
         int8_t buffer_pm[PM_BLOCK_SIZE];
         int8_t buffer_px1[P3_FRAME_LEN_MP3_MP11];
         int8_t buffer_px2[P3_FRAME_LEN_MP3_MP11];
@@ -669,8 +704,8 @@ void sync_process_fm(sync_t *st)
                 for (j = 1; j < PARTITION_WIDTH_FM; j++)
                 {
                     c = st->buffer[i + j][n];
-                    buffer_pm[out_pm++] = demod(crealf(c), ALB_PLB(i));
-                    buffer_pm[out_pm++] = demod(cimagf(c), ALB_PLB(i));
+                    buffer_pm[out_pm++] = demod(crealf(c), ALB_WLB(i, i + j, n));
+                    buffer_pm[out_pm++] = demod(cimagf(c), ALB_WLB(i, i + j, n));
                 }
             }
             for (i = UB_END - (PM_PARTITIONS * PARTITION_WIDTH_FM); i < UB_END; i += PARTITION_WIDTH_FM)
@@ -679,8 +714,8 @@ void sync_process_fm(sync_t *st)
                 for (j = 1; j < PARTITION_WIDTH_FM; j++)
                 {
                     c = st->buffer[i + j][n];
-                    buffer_pm[out_pm++] = demod(crealf(c), ALB_PUB(i));
-                    buffer_pm[out_pm++] = demod(cimagf(c), ALB_PUB(i));
+                    buffer_pm[out_pm++] = demod(crealf(c), ALB_WUB(i, i + j, n));
+                    buffer_pm[out_pm++] = demod(cimagf(c), ALB_WUB(i, i + j, n));
                 }
             }
             if (compatibility_mode[st->psmi] == 2) {
@@ -688,14 +723,14 @@ void sync_process_fm(sync_t *st)
                 for (j = 1; j < PARTITION_WIDTH_FM; j++)
                 {
                     c = st->buffer[LB_START + (PM_PARTITIONS * PARTITION_WIDTH_FM) + j][n];
-                    buffer_px1[out_px1++] = demod(crealf(c), ALB_PLB(LB_START + (PM_PARTITIONS * PARTITION_WIDTH_FM)));
-                    buffer_px1[out_px1++] = demod(cimagf(c), ALB_PLB(LB_START + (PM_PARTITIONS * PARTITION_WIDTH_FM)));
+                    buffer_px1[out_px1++] = demod(crealf(c), ALB_WLB(LB_START + (PM_PARTITIONS * PARTITION_WIDTH_FM), LB_START + (PM_PARTITIONS * PARTITION_WIDTH_FM) + j, n));
+                    buffer_px1[out_px1++] = demod(cimagf(c), ALB_WLB(LB_START + (PM_PARTITIONS * PARTITION_WIDTH_FM), LB_START + (PM_PARTITIONS * PARTITION_WIDTH_FM) + j, n));
                 }
                 for (j = 1; j < PARTITION_WIDTH_FM; j++)
                 {
                     c = st->buffer[UB_END - (PM_PARTITIONS + 1) * PARTITION_WIDTH_FM + j][n];
-                    buffer_px1[out_px1++] = demod(crealf(c), ALB_PUB(UB_END - (PM_PARTITIONS + 1) * PARTITION_WIDTH_FM));
-                    buffer_px1[out_px1++] = demod(cimagf(c), ALB_PUB(UB_END - (PM_PARTITIONS + 1) * PARTITION_WIDTH_FM));
+                    buffer_px1[out_px1++] = demod(crealf(c), ALB_WUB(UB_END - (PM_PARTITIONS + 1) * PARTITION_WIDTH_FM, UB_END - (PM_PARTITIONS + 1) * PARTITION_WIDTH_FM + j, n));
+                    buffer_px1[out_px1++] = demod(cimagf(c), ALB_WUB(UB_END - (PM_PARTITIONS + 1) * PARTITION_WIDTH_FM, UB_END - (PM_PARTITIONS + 1) * PARTITION_WIDTH_FM + j, n));
                 }
             }
             if ((compatibility_mode[st->psmi] == 3) || (compatibility_mode[st->psmi] == 11)) {
@@ -705,8 +740,8 @@ void sync_process_fm(sync_t *st)
                     for (j = 1; j < PARTITION_WIDTH_FM; j++)
                     {
                         c = st->buffer[i + j][n];
-                        buffer_px1[out_px1++] = demod(crealf(c), ALB_PLB(i));
-                        buffer_px1[out_px1++] = demod(cimagf(c), ALB_PLB(i));
+                        buffer_px1[out_px1++] = demod(crealf(c), ALB_WLB(i, i + j, n));
+                        buffer_px1[out_px1++] = demod(cimagf(c), ALB_WLB(i, i + j, n));
                     }
                 }
                 for (i = UB_END - (PM_PARTITIONS + 2) * PARTITION_WIDTH_FM; i < UB_END - (PM_PARTITIONS * PARTITION_WIDTH_FM); i += PARTITION_WIDTH_FM)
@@ -715,8 +750,8 @@ void sync_process_fm(sync_t *st)
                     for (j = 1; j < PARTITION_WIDTH_FM; j++)
                     {
                         c = st->buffer[i + j][n];
-                        buffer_px1[out_px1++] = demod(crealf(c), ALB_PUB(i));
-                        buffer_px1[out_px1++] = demod(cimagf(c), ALB_PUB(i));
+                        buffer_px1[out_px1++] = demod(crealf(c), ALB_WUB(i, i + j, n));
+                        buffer_px1[out_px1++] = demod(cimagf(c), ALB_WUB(i, i + j, n));
                     }
                 }
             }
@@ -727,8 +762,8 @@ void sync_process_fm(sync_t *st)
                     for (j = 1; j < PARTITION_WIDTH_FM; j++)
                     {
                         c = st->buffer[i + j][n];
-                        buffer_px2[out_px2++] = demod(crealf(c), ALB_PLB(i));
-                        buffer_px2[out_px2++] = demod(cimagf(c), ALB_PLB(i));
+                        buffer_px2[out_px2++] = demod(crealf(c), ALB_WLB(i, i + j, n));
+                        buffer_px2[out_px2++] = demod(cimagf(c), ALB_WLB(i, i + j, n));
                     }
                 }
                 for (i = UB_END - (PM_PARTITIONS + 4) * PARTITION_WIDTH_FM; i < UB_END - (PM_PARTITIONS + 2) * PARTITION_WIDTH_FM; i += PARTITION_WIDTH_FM)
@@ -739,8 +774,8 @@ void sync_process_fm(sync_t *st)
                         c = st->buffer[i + j][n];
                         // stock uses mult_lb here (upstream quirk); keep that
                         // when the gate is off, fix attribution when on
-                        buffer_px2[out_px2++] = demod(crealf(c), part_weight ? ALB_PUB(i) : mult_lb);
-                        buffer_px2[out_px2++] = demod(cimagf(c), part_weight ? ALB_PUB(i) : mult_lb);
+                        buffer_px2[out_px2++] = demod(crealf(c), part_weight ? ALB_WUB(i, i + j, n) : mult_lb);
+                        buffer_px2[out_px2++] = demod(cimagf(c), part_weight ? ALB_WUB(i, i + j, n) : mult_lb);
                     }
                 }
             }
