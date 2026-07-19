@@ -280,6 +280,57 @@ static float calc_smag(sync_t *st, unsigned int ref)
     return sum / BLKSZ;
 }
 
+// albacore: ALBACORE_TRACK_FAST=1 — per-SYMBOL reference amplitude via an
+// 11-tap sliding mean with cross-block history, replacing the one-
+// amplitude-per-block calc_smag. Under doppler of a few Hz the channel
+// amplitude moves WITHIN the 93 ms block, so a block-frozen amplitude
+// mis-equalizes most symbols; per-symbol tracking follows it (the
+// reference-receiver design: 11-tap time FIR on data-stripped refs).
+static int alb_fast_on = -1;
+static float alb_ref_hist[FFT_FM][5];
+static unsigned char alb_ref_hist_ok[FFT_FM];
+// shared refs are used by two adjacent partitions per block: cache the
+// tracked amplitudes per block so history advances exactly once per ref
+static unsigned int alb_block_ctr;
+static unsigned int alb_trk_stamp[FFT_FM];
+static float alb_trk_cache[FFT_FM][BLKSZ];
+
+static void calc_smag_track(sync_t *st, unsigned int ref, float *out)
+{
+    float seq[5 + BLKSZ];
+    if (alb_trk_stamp[ref] == alb_block_ctr && alb_ref_hist_ok[ref])
+    {
+        memcpy(out, alb_trk_cache[ref], BLKSZ * sizeof(float));
+        return;
+    }
+    if (!alb_ref_hist_ok[ref])
+    {
+        float m = calc_smag(st, ref);
+        for (int i = 0; i < 5; i++)
+            seq[i] = m;
+    }
+    else
+        memcpy(seq, alb_ref_hist[ref], 5 * sizeof(float));
+    for (int n = 0; n < BLKSZ; n++)
+        seq[5 + n] = fabsf(crealf(st->buffer[ref][n]));
+    for (int n = 0; n < BLKSZ; n++)
+    {
+        // centered 11-tap window on symbol n = seq[n .. n+10], clamped
+        // at the right edge where future symbols don't exist yet
+        int hi = n + 10;
+        if (hi > 5 + BLKSZ - 1)
+            hi = 5 + BLKSZ - 1;
+        float s = 0;
+        for (int k = n; k <= hi; k++)
+            s += seq[k];
+        out[n] = s / (hi - n + 1);
+    }
+    memcpy(alb_ref_hist[ref], seq + BLKSZ, 5 * sizeof(float));
+    alb_ref_hist_ok[ref] = 1;
+    memcpy(alb_trk_cache[ref], out, BLKSZ * sizeof(float));
+    alb_trk_stamp[ref] = alb_block_ctr;
+}
+
 // albacore: |interpolated channel gain|^2 per (carrier, block symbol),
 // captured during equalization for CSI-weighted branch metrics
 // (ALBACORE_CSI=1). Zero-forcing equalization divides by the gain and
@@ -300,6 +351,17 @@ static int alb_mmse_on = -1;
 static void adjust_data(sync_t *st, unsigned int lower, unsigned int upper)
 {
     float smag0, smag19;
+    float trk0[BLKSZ], trk19[BLKSZ];
+    if (alb_fast_on < 0)
+    {
+        const char *tf = getenv("ALBACORE_TRACK_FAST");
+        alb_fast_on = (tf && atoi(tf) != 0) ? 1 : 0;
+    }
+    if (alb_fast_on == 1)
+    {
+        calc_smag_track(st, lower, trk0);
+        calc_smag_track(st, upper, trk19);
+    }
     smag0 = calc_smag(st, lower);
     smag19 = calc_smag(st, upper);
 
@@ -307,6 +369,11 @@ static void adjust_data(sync_t *st, unsigned int lower, unsigned int upper)
     {
         float complex upper_phase = cexpf(st->phases[upper][n] * I);
         float complex lower_phase = cexpf(st->phases[lower][n] * I);
+        if (alb_fast_on == 1)
+        {
+            smag0 = trk0[n];
+            smag19 = trk19[n];
+        }
 
         for (int k = 1; k < PARTITION_WIDTH_FM; k++)
         {
@@ -485,6 +552,7 @@ void sync_process_fm(sync_t *st)
         float sum_xy = 0, sum_x2 = 0;
         float sd_vals[32];
         int sd_n = 0;
+        alb_block_ctr++;   // albacore: one tracked-amplitude pass per ref per block
         for (i = 0; i < partitions_per_band * PARTITION_WIDTH_FM; i += PARTITION_WIDTH_FM)
         {
             adjust_data(st, LB_START + i, LB_START + i + PARTITION_WIDTH_FM);
