@@ -238,12 +238,17 @@ clean-signal output byte-identical with everything off.
 
 **Field-validated the same evening** on a live capture of a station
 with real one-sided sideband damage (`lab/hd_field_survey.py`): during
-a natural fade the pair decoded 9 s of audio where stock produced
-zero, and on a 90 s specimen nudged to the cliff with mild AWGN the
-pair was worth ~2 dB of margin — at +2 dB added noise, stock decodes
-nothing and the pair delivers 49 s of music. Replay A/B on identical
-captures is the only honest field protocol; live conditions swing
-minute to minute.
+a natural fade the pair decoded 9 s of audio frames where stock
+produced zero, and on a 90 s specimen nudged to the cliff with mild
+AWGN the pair was worth ~2 dB of frame-decode margin (stock zero,
+pair 49 s of decoded frames at +2 dB). Accuracy note from the later
+audio-truth audit: that station's evening programming was quiet with
+heavy degradation, so the rescued frames' audible value is unproven —
+the margin numbers are frame-CRC-level, which is the decoder-side
+truth; the same pair separately proved ≥4 dB of *listenable-audio*
+margin on slow-fading channels (18/18 trials) where content was known.
+Replay A/B on identical captures is the only honest field protocol;
+live conditions swing minute to minute.
 
 ## Building
 

@@ -92,6 +92,53 @@ jam-rescue, fading-rescue). Mechanism consistent throughout: notch-swept
 reference subcarriers derail the mean-based tracking feedback; median/MAD
 estimators don't care.
 
+## Accuracy pass (2026-07-19, multi-seed replication + re-analysis)
+
+Every headline claim re-tested across seeds/configs; interpretations corrected
+where the data demanded it.
+
+**Replicated (multi-seed):**
+- **Pair fading margin** (18 slow-fade trials: 2 delays × 3 seeds × 3 rungs at
+  0.8 Hz doppler): stock partial at +3 dB (9–17 s), dead from +5 dB; the pair
+  scored a perfect 27/27 real seconds in **all 18 trials through +7 dB**.
+  ≥4 dB slow-fading margin: CONFIRMED.
+- **MMSE AWGN-cliff win** (5 seeds at the +9 dB cliff rung): pair median 1
+  real second vs MMSE median 8 — MMSE won in 5/5 seeds. MMSE+CSI is slightly
+  below MMSE alone (CSI remains ≤neutral). CONFIRMED, magnitude ~sub-dB of
+  effective margin concentrated exactly at the cliff.
+- **MMSE fading regression** (3 seeds, +9 dB): pair 26/26/26 vs MMSE 4/7/11.
+  CONFIRMED — the stale-λ mechanism is real; keep MMSE off on dynamic channels.
+
+**New boundary discovered:** at **5 Hz doppler** (≈ driving speed at FM
+frequencies) the two-ray channel defeats EVERY configuration — stock and all
+knobs, 0/0 at every noise level, both delays, all seeds. Slow fading is the
+pair's win; **fast fading is beyond the current receiver architecture
+entirely** — which is precisely the regime the reference receiver's 11-tap
+time-domain channel filter (lever #2) and true CSI exist for. The mobile-fade
+frontier is now measured, not hypothesized.
+
+**Interpretations corrected:**
+- **91.9 re-diagnosis, twice**: the afternoon capture decodes 43/43 s of real
+  audio through stock at BER 0.042 (91.9 was always decodable with content);
+  the evening all-silence decodes prompted a source-dead-air hypothesis that
+  silence-structure analysis then REFUTED (bursty silence runs + fragments of
+  quiet real content = heavy degradation over quiet programming). The field
+  rescue stands as a frame-decode rescue (~2 dB); audible-content value for
+  that specific window is unproven.
+- **Median bias correction (US9106472): not applicable to current code** —
+  our median lives only in the global tracking fit, not in channel-amplitude
+  estimates. It becomes mandatory only if channel estimates are ever
+  median-filtered.
+- **"Frequency-only estimation" framing softened**: nrsc5 block-averages ref
+  amplitudes over 32 symbols and IIR-tracks phases — crude time filtering
+  exists; the true gap is the sliding data-stripped 11-tap FIR + frequency
+  smoothing cascade.
+
+**New instrument:** the lab MER dial is now calibrated against the decoder:
+`nrsc5_MER ≈ 0.60 × dial + 3.3` (rms residual 1.0 dB over six sideband pairs
+spanning −1.3…17.9 dB; validated out-of-sample on cliff2 within 0.7 dB). The
+IQ-only dial predicts decoder MER without decoding — the Knob-of-Time sensor.
+
 ## Open questions carried forward
 - How much of the ~10 dB CSI gain survives at NRSC-5 cliff SNR (802.11a figure
   is at BER 1e-5)? Answer: replay A/B on the hd_cliff corpus.
