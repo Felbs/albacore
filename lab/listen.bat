@@ -4,6 +4,11 @@ rem usage: listen.bat [MHz] [program]   (default 93.3 HD1)
 rem Decodes through the albacore build with ALBACORE=1 (certified stack).
 set "NRSC5_EXE=Z:\src\albacore\build\src\nrsc5.exe"
 set "ALBACORE=1"
+set "ALBACORE_COSTAS_BW=auto"
+rem antenna defaults: port C (discone) while the A/B RFI storm persists
+if not defined HD_ANT set "HD_ANT=Antenna C"
+if not defined HD_IFGR set "HD_IFGR=30"
+if not defined HD_RFGAIN set "HD_RFGAIN=7"
 set "PATH=C:\msys64\mingw64\bin;%PATH%"
 set "MHZ=%~1"
 if "%MHZ%"=="" set "MHZ=93.3"

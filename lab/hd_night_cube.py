@@ -35,19 +35,32 @@ def main():
     a = ap.parse_args()
     until = datetime.fromisoformat(a.until.replace("Z", "+00:00"))
     log(f"cube armed: {a.mhz} every {a.slot_min}min until {until:%H:%M}Z")
+    import subprocess as _sp
     while datetime.now(timezone.utc) < until:
         slot_t0 = time.time()
+        healed = False
         for mhz in a.mhz:
-            try:
-                out, secs, wall = fs.capture(mhz, a.secs, "cube")
-                res = fs.nrsc5_replay(out, secs)
-                log(f"{mhz:5.1f} {res['name'][:10]:10s} sync={res['sync']} "
-                    f"mer {res['mer_lo']:.1f}/{res['mer_hi']:.1f} "
-                    f"ber {res['ber']:.4f} audio {res['audio_s']:.0f}s "
-                    f"-> {out.name}")
-            except Exception as e:
-                log(f"{mhz:5.1f} skip ({str(e)[:50]})")
-                break  # SDR busy: give the whole slot away
+            for attempt in (0, 1):
+                try:
+                    out, secs, wall = fs.capture(mhz, a.secs, "cube")
+                    res = fs.nrsc5_replay(out, secs)
+                    log(f"{mhz:5.1f} {res['name'][:10]:10s} sync={res['sync']} "
+                        f"mer {res['mer_lo']:.1f}/{res['mer_hi']:.1f} "
+                        f"ber {res['ber']:.4f} audio {res['audio_s']:.0f}s "
+                        f"-> {out.name}")
+                    break
+                except Exception as e:
+                    if attempt == 0 and not healed:
+                        # self-heal the post-idle service wedge once per slot
+                        log(f"{mhz:5.1f} wedge ({str(e)[:40]}) - healing service")
+                        _sp.run(["powershell", "-Command",
+                                 "Restart-Service SDRplayAPIService -Force"],
+                                capture_output=True, timeout=60)
+                        healed = True
+                        time.sleep(6)
+                    else:
+                        log(f"{mhz:5.1f} skip ({str(e)[:50]})")
+                        break
         wait = a.slot_min * 60 - (time.time() - slot_t0)
         if wait > 0:
             time.sleep(wait)
