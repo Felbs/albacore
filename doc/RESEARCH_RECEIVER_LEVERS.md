@@ -183,3 +183,15 @@ fd=5: 6/6 seeds rescued (27,27,27,27,27,14 vs pair all-zero; both echo
 delays). fd=8 clean: 3/3 (22,22,12). AWGN trap: neutral within noise
 (one seed 26->21 = small false-widening cost at the cliff edge).
 UNCONQUERED: fd=8 + added noise (0/0/0) - the next frontier marker.
+
+### RFI storm + impulse-blanking verdict (~05:20)
+The overnight A/B-port RFI (floor +24 dB) is IMPULSIVE: 35% of 1 ms
+blocks carry bursts >10x median energy (p99 +24 dB), now bleeding into
+port C too (+15.5 dB margin, down from +21.9, and 93.3 no longer syncs
+live). Impulse blanking (4x/2.5x median, dilated) does NOT rescue: 35%
+duty is continuous burst noise, not sparse impulses (blanking territory
+is <5% duty), and the wedge-shortened 6 s specimen is too short for a
+fair decode anyway. Verdict: physical source hunt required (signature:
+appliance/line arcing that switched on ~03:00 local, strengthening
+toward dawn). The cube's hourly canary log doubles as the RFI timeline
+to correlate against household devices.
