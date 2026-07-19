@@ -29,16 +29,18 @@ def fnum(x):
         return None
 
 
-def main():
-    rows = [r for r in csv.DictReader(open(CUBE))
-            if int(r["slot"]) >= 3 and "starved" not in r["tag"]
-            and r["tag"] == "base"]
+# Hour bands: the 7/19 cube proved the winner map is TIME-DEPENDENT
+# (the TV yagi owned 88.5/103.5 midday; the discone swept the evening).
+# UTC-hour buckets; "night" inherits evening until night data exists.
+BANDS = {"day": range(11, 19), "evening": range(19, 24)}
+
+
+def fit(rows):
     cube = defaultdict(lambda: defaultdict(list))
     for r in rows:
         cube[r["mhz"]][r["ant"]].append(r)
-    table = {"fitted_utc": datetime.now(timezone.utc).isoformat(),
-             "n_rows": len(rows), "stations": {}}
-    for mhz, ants in sorted(cube.items(), key=lambda kv: float(kv[0])):
+    out = {}
+    for mhz, ants in cube.items():
         cand = []
         for ant, rs in ants.items():
             aud = sum(fnum(r["audio_s"]) or 0 for r in rs) / len(rs)
@@ -54,18 +56,41 @@ def main():
                          "rfgain": rs[-1]["rfgain"]})
         hd = max(cand, key=lambda c: (c["aud"], c["sync"], c["mer"] or -99))
         fm = max(cand, key=lambda c: c["pilot"] or -99)
-        table["stations"][mhz] = {
+        out[mhz] = {
             "hd_ant": ANT_PORT[hd["ant"]] if hd["aud"] > 0 else None,
             "hd_evidence": hd,
             "fm_ant": ANT_PORT[fm["ant"]] if (fm["pilot"] or 0) > 6 else None,
             "fm_evidence": fm,
             "candidates": cand}
-        hd_s = f"{hd['ant']}({hd['aud']}s)" if hd["aud"] > 0 else "none-yet"
-        fm_s = (f"{fm['ant']}({fm['pilot']}dB)"
-                if (fm["pilot"] or 0) > 6 else "none-yet")
-        print(f" {mhz:>5s} MHz  HD -> {hd_s:22s} FM -> {fm_s}")
+    return out
+
+
+def main():
+    rows = [r for r in csv.DictReader(open(CUBE))
+            if int(r["slot"]) >= 3 and "starved" not in r["tag"]
+            and r["tag"] == "base"]
+    table = {"fitted_utc": datetime.now(timezone.utc).isoformat(),
+             "n_rows": len(rows), "stations": fit(rows), "by_hour": {}}
+    for band, hours in BANDS.items():
+        sub = [r for r in rows if int(r["utc"][11:13]) in hours]
+        if sub:
+            table["by_hour"][band] = {"n_rows": len(sub),
+                                      "stations": fit(sub)}
+    for mhz in sorted(table["stations"], key=float):
+        ent = table["stations"][mhz]
+        hd, fm = ent["hd_evidence"], ent["fm_evidence"]
+        hd_s = f"{hd['ant']}({hd['aud']}s)" if ent["hd_ant"] else "none-yet"
+        fm_s = f"{fm['ant']}({fm['pilot']}dB)" if ent["fm_ant"] else "none-yet"
+        hours = " | ".join(
+            f"{band}: {table['by_hour'][band]['stations'][mhz]['hd_evidence']['ant']}"
+            for band in table["by_hour"]
+            if mhz in table["by_hour"][band]["stations"]
+            and table["by_hour"][band]["stations"][mhz]["hd_ant"])
+        print(f" {mhz:>5s} MHz  HD -> {hd_s:22s} FM -> {fm_s:20s} "
+              f"[{hours}]")
     TABLE.write_text(json.dumps(table, indent=1))
-    print(f"\ntable -> {TABLE} ({len(rows)} clean base rows)")
+    print(f"\ntable -> {TABLE} ({len(rows)} clean base rows, "
+          f"hour bands: {list(table['by_hour'])})")
 
 
 if __name__ == "__main__":
