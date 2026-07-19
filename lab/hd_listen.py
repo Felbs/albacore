@@ -52,7 +52,7 @@ def main():
     nr = subprocess.Popen([NRSC5, "-r", "-", "-o", "-", str(a.prog)],
                           stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=False)
-    mpv = subprocess.Popen([MPV, "-", "--volume=110", "--cache=yes",
+    mpv = subprocess.Popen([MPV, "-", "--volume=100", "--cache=yes",
                             "--cache-secs=2", "--force-window=no"],
                            stdin=subprocess.PIPE)
     stop = threading.Event()
