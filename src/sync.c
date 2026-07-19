@@ -107,10 +107,32 @@ static uint8_t qam64(complex float cf)
     return gray8(crealf(cf)) | (gray8(cimagf(cf)) << 3);
 }
 
+// albacore: ALBACORE_COSTAS_BW=auto — adaptive loop bandwidth. The
+// discriminator between "channel moving, widen" and "just noise, stay
+// narrow": Costas innovations are zero-mean under noise but SYSTEMATIC
+// under doppler lag, so |mean(signed error over block)| per ref, averaged
+// over refs, detects lag without being fooled by AWGN. Fast attack, slow
+// decay. Numeric ALBACORE_COSTAS_BW=<mult> forces a fixed multiplier.
+static int alb_bw_mode = -2;      // -2 unset, -1 auto, 0 stock, >0 fixed*100
+static float alb_err_sum[FFT_FM];
+static float alb_err_refs;
+static float alb_bw_cur = 1.0f;
+static int alb_bw_calm = 0;
+static float alb_prev_merlin = 10.0f;   // last block's mean linear MER
+
+static void alb_set_loopbw(sync_t *st, float mult)
+{
+    float loop_bw = 0.05f * mult, damping = 0.70710678f;
+    float denom = 1 + (2 * damping * loop_bw) + (loop_bw * loop_bw);
+    st->alpha = (4 * damping * loop_bw) / denom;
+    st->beta = (4 * loop_bw * loop_bw) / denom;
+}
+
 static void adjust_ref(sync_t *st, unsigned int ref, int cfo)
 {
     unsigned int n;
     float cfo_freq = 2 * M_PI * cfo * CP_FM / FFT_FM;
+    float esum = 0;
 
     // differentially-encoded sync & parity bits
     static const signed char sync[] = {
@@ -131,7 +153,10 @@ static void adjust_ref(sync_t *st, unsigned int ref, int cfo)
         st->costas_phase[ref] += st->costas_freq[ref] + cfo_freq + (st->alpha * error);
         if (st->costas_phase[ref] > M_PI) st->costas_phase[ref] -= 2 * M_PI;
         if (st->costas_phase[ref] < -M_PI) st->costas_phase[ref] += 2 * M_PI;
+        esum += error;
     }
+    alb_err_sum[ref] = esum;
+    alb_err_refs += 1.0f;
 
     // compare to sync & parity bits
     float x = 0;
@@ -553,6 +578,66 @@ void sync_process_fm(sync_t *st)
         float sd_vals[32];
         int sd_n = 0;
         alb_block_ctr++;   // albacore: one tracked-amplitude pass per ref per block
+        if (alb_bw_mode == -2)
+        {
+            const char *cb = getenv("ALBACORE_COSTAS_BW");
+            if (!cb) alb_bw_mode = 0;
+            else if (strcmp(cb, "auto") == 0) alb_bw_mode = -1;
+            else alb_bw_mode = 0;   // fixed multiplier handled in sync_init
+        }
+        if (alb_bw_mode == -1)
+        {
+            // Discriminator v2: block-to-block RELATIVE amplitude change of
+            // the refs. Fading physically swings |H| between 93 ms blocks;
+            // static AWGN leaves block-mean amplitudes stable at any SNR.
+            // (v1 — signed Costas innovation means — was FALSIFIED in
+            // calibration: finite-sample noise outread real doppler.)
+            static float alb_smag_prev[FFT_FM];
+            float L = 0; int nr = 0;
+            for (i = 0; i < partitions_per_band * PARTITION_WIDTH_FM + 1; i += PARTITION_WIDTH_FM)
+            {
+                unsigned int rr[2] = { LB_START + i, UB_END - i };
+                for (int q = 0; q < 2; q++)
+                {
+                    float s_now = calc_smag(st, rr[q]);
+                    float prev = alb_smag_prev[rr[q]];
+                    if (prev > 1e-6f)
+                    {
+                        L += fabsf(s_now - prev) / prev;
+                        nr++;
+                    }
+                    alb_smag_prev[rr[q]] = s_now;
+                }
+            }
+            L = nr ? L / nr : 0;
+            // dynamic channel detected -> at least x2; heavy swing -> x4;
+            // then ESCALATE while last block's MER stays broken (fd=8
+            // aliases the observable down to ~0.2, but failing MER keeps
+            // doubling until decode recovers) — the truth dial drives it.
+            float want = (L > 0.45f) ? 4.0f : (L > 0.15f) ? 2.0f : 1.0f;
+            if (L > 0.15f && alb_prev_merlin < 2.0f && alb_bw_cur < 8.0f)
+                want = alb_bw_cur * 2.0f;
+            if (want > alb_bw_cur)
+            {
+                alb_bw_cur = want;      // fast attack: widen immediately
+                alb_bw_calm = 0;
+            }
+            else if (want < alb_bw_cur && ++alb_bw_calm >= 8)
+            {
+                alb_bw_cur = want;      // slow decay: ~0.75 s of calm first
+                alb_bw_calm = 0;
+            }
+            alb_set_loopbw(st, alb_bw_cur);
+            static int bwdbg = -1;
+            if (bwdbg < 0)
+            {
+                const char *d = getenv("ALBACORE_DEBUG_BW");
+                bwdbg = (d && atoi(d) != 0) ? 1 : 0;
+            }
+            static unsigned int bwdc;
+            if (bwdbg && (bwdc++ % 16) == 0)
+                fprintf(stderr, "[alb-bw] L=%.4f bw=%.0fx\n", L, alb_bw_cur);
+        }
         for (i = 0; i < partitions_per_band * PARTITION_WIDTH_FM; i += PARTITION_WIDTH_FM)
         {
             adjust_data(st, LB_START + i, LB_START + i + PARTITION_WIDTH_FM);
@@ -701,6 +786,7 @@ void sync_process_fm(sync_t *st)
         const float mer_ub = 2.0f * BLKSZ * (float)(partitions_per_band * PARTITION_DATA_CARRIERS) / error_ub;
         const float mult_lb = fmaxf(fminf(mer_lb * 10, 127), 1);
         const float mult_ub = fmaxf(fminf(mer_ub * 10, 127), 1);
+        alb_prev_merlin = 0.5f * (mer_lb + mer_ub);   // albacore: adaptive-BW feedback
 
         // albacore: optional per-partition confidence weighting
         // (ALBACORE_PART_WEIGHT=1). Same mult formula, computed per 19-carrier

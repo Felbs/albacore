@@ -167,3 +167,13 @@ fixed known doppler. The cost is equally textbook: at +8 dB AWGN (static
 channel) x4 collapses 27->0 - wide loops track noise. Endgame: adaptive
 bandwidth from per-block phase-innovation variance (next build). With it,
 the receiver would hold from parked-car to highway speeds automatically.
+
+## The endgame knob (night shift ~05:00): ALBACORE_COSTAS_BW=auto
+Adaptive loop bandwidth, truth-dial-driven: block-to-block relative ref
+amplitude change (Delta-smag) detects a dynamic channel (clean 0.03 /
+AWGN+8dB 0.10 / fading 0.68 - the v1 signed-innovation discriminator was
+FALSIFIED by calibration and replaced), then last-block MER escalates
+bandwidth x2 up to x8 while decode stays broken; slow decay on calm.
+Acid test (real listenable seconds of ~27): clean 27, AWGN-trap 27 (no
+false widening), slow fades 27, fd=5 0->27/27, fd=8 0->22. Parked-to-
+highway mobility with no manual knob.
