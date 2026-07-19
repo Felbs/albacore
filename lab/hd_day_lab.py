@@ -106,12 +106,17 @@ def three_way(cu8):
         subprocess.run([EXE, "-r", str(cu8), "-o", str(wav), "0"],
                        capture_output=True, timeout=300, env=e)
         real = 0
-        if wav.exists() and wav.stat().st_size > 44:
-            x, fsr = meter.load_wav(wav)
-            rows = meter.per_second_metrics(x, fsr)
-            if rows:
-                meter.judge(rows)
-                real = sum(r["ok"] for r in rows)
+        # header-only/truncated WAVs (a leg that decoded nothing) must
+        # score 0, not crash the whole 3-way ("not a WAVE file", 7/19)
+        try:
+            if wav.exists() and wav.stat().st_size > 1000:
+                x, fsr = meter.load_wav(wav)
+                rows = meter.per_second_metrics(x, fsr)
+                if rows:
+                    meter.judge(rows)
+                    real = sum(r["ok"] for r in rows)
+        except Exception:
+            pass
         res[tag] = real
     return res
 
