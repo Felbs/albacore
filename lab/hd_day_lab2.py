@@ -193,6 +193,13 @@ def one_capture(mhz, ant, ifgr, rfgain, tag, slot, rfi):
     if held:
         raise DeviceYield(held)
     try:
+        import radio_lock
+        radio_lock.heartbeat()          # slot outlives the lock TTL
+        if radio_lock.should_yield():
+            raise DeviceYield(radio_lock.should_yield())
+    except ImportError:
+        pass
+    try:
         out, secs, wall = cap_env(mhz, ant, ifgr, rfgain, 14, "cube")
     except Exception as e:
         if is_busy_error(e):
@@ -306,6 +313,17 @@ def main():
         else:
             ant = ANTS[slot % 3]
             healed = False
+            import radio_lock
+            if not radio_lock.acquire("lab", f"cube slot {slot}", 50,
+                                      wait_s=20):
+                h = radio_lock.status() or {}
+                log(f"slot {slot} yielded - radio lock held by "
+                    f"{h.get('owner', '?')} ({h.get('purpose', '?')})")
+                slot += 1
+                wait = a.slot_min * 60 - (time.time() - slot_t0)
+                if wait > 0:
+                    time.sleep(wait)
+                continue
             try:
                 rfi = v1.rfi_probe()
                 log(f"slot {slot} [{ANT_NICK[ant]}]: RFI floor "
@@ -379,6 +397,8 @@ def main():
                         log(f"  knobA/B skip ({str(e)[:40]})")
             except Exception as e:
                 log(f"slot {slot} aborted ({str(e)[:60]})")
+            finally:
+                radio_lock.release("lab")
             log(f"slot {slot} done in {time.time()-slot_t0:.0f}s")
         slot += 1
         wait = a.slot_min * 60 - (time.time() - slot_t0)

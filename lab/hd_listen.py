@@ -27,6 +27,13 @@ def main():
     ap.add_argument("--prog", type=int, default=0)
     a = ap.parse_args()
 
+    import radio_lock
+    if not radio_lock.acquire("hd_listen", f"live {a.mhz:.1f}", 80,
+                              wait_s=30):
+        h = radio_lock.status() or {}
+        print(f"radio reserved by {h.get('owner', '?')} "
+              f"({h.get('purpose', '?')}) - try again shortly")
+        return 1
     sdr = None
     for attempt in range(6):
         try:
@@ -37,6 +44,7 @@ def main():
             time.sleep(10)
     if sdr is None:
         print("could not get the SDR - is something recording?")
+        radio_lock.release("hd_listen")
         return 1
 
     wav = LAB / "hd_live.wav"
@@ -104,8 +112,12 @@ def main():
 
     threading.Thread(target=sdr_reader, daemon=True).start()
     mpv_started = False
+    last_hb = time.time()
     try:
         while not stop.is_set():
+            if time.time() - last_hb > 20:
+                radio_lock.heartbeat()
+                last_hb = time.time()
             try:
                 chunk = iq_q.get(timeout=1.0)
             except _q.Empty:
@@ -133,6 +145,7 @@ def main():
         pass
     sdr.deactivateStream(st)
     sdr.closeStream(st)
+    radio_lock.release("hd_listen")
     print("stopped, SDR released")
     return 0
 
