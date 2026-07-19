@@ -452,7 +452,9 @@ void sync_process_fm(sync_t *st)
         if (robust < 0)
         {
             const char *rt = getenv("ALBACORE_ROBUST_TRACK");
-            robust = (rt && atoi(rt) != 0) ? 1 : 0;
+            const char *master = getenv("ALBACORE");
+            robust = rt ? (atoi(rt) != 0)
+                        : (master && atoi(master) != 0) ? 1 : 0;
         }
 
         float samperr = 0, angle = 0;
@@ -586,11 +588,16 @@ void sync_process_fm(sync_t *st)
         // partition instead of per sideband: frequency-selective damage
         // (one faded/jammed partition) stops diluting the clean partitions'
         // confidence. Partition index counts outer->inner on both sidebands.
+        // ALBACORE=1 is the master switch: enables the validated stack
+        // (robust tracking + partition weighting + erase floor 2); the
+        // individual ALBACORE_* vars still override.
         static int part_weight = -1;
         if (part_weight < 0)
         {
             const char *pw = getenv("ALBACORE_PART_WEIGHT");
-            part_weight = (pw && atoi(pw) != 0) ? 1 : 0;
+            const char *master = getenv("ALBACORE");
+            part_weight = pw ? (atoi(pw) != 0)
+                             : (master && atoi(master) != 0) ? 1 : 0;
         }
         float mult_lb_part[16], mult_ub_part[16];
         for (i = 0; i < 16; i++)
@@ -603,6 +610,9 @@ void sync_process_fm(sync_t *st)
             // ALBACORE_ERASE=<floor>: partitions whose weight lands at or
             // below <floor> are output as EXACT soft-zeros (true Viterbi
             // erasure) instead of weak +/-1s. 0 disables (default).
+            // NOTE: deliberately NOT enabled by the ALBACORE master switch —
+            // certification found regressions on a strong extended-mode
+            // station and one jam config. Opt-in experimental only.
             static float erase_floor = -1;
             if (erase_floor < 0)
             {

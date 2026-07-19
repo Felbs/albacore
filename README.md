@@ -198,12 +198,43 @@ behavior unchanged. nrsc5's printed BER is a pre-FEC channel metric
 and barely moves with soft-decision changes — judge A/Bs on decoded
 audio seconds instead.
 
-Stage-2 addendum: `ALBACORE_ERASE=2` (with the pair) turns partitions
-whose confidence floors out into exact soft-zero Viterbi erasures
-instead of weak ±1s. Gentle floors are a small free win (one +10%
-audio case, never worse in testing); aggressive floors (5+) destroy
-decodes — the Viterbi still extracts value from weight-1 bits unless
-they're actively misleading. Default off.
+Stage-2 addendum: `ALBACORE_ERASE=<floor>` (with the pair) turns
+partitions whose confidence floors out into exact soft-zero Viterbi
+erasures instead of weak ±1s. Verdict after full certification:
+**experimental, opt-in only** — it bought +10% audio in one edge case
+but the 14-case certification sweep caught it regressing a strong
+extended-mode station and one jam configuration (a smaller earlier
+test had missed both). Aggressive floors (5+) reliably destroy
+decodes. The `ALBACORE=1` master switch deliberately excludes it.
+
+### Stage 3 resolution: FM sidebands are not duplicates
+
+The campaign charter imagined MRC-style combining of "duplicated"
+sideband data. The source referees this away for FM hybrid: P1 is
+**one codeword** — a single interleaver spans all 20 partitions (10
+per sideband) into one rate-2/5 convolutional decode. The sidebands
+are complementary punctured halves (that's why audio survives with
+one sideband nulled, at an effective higher code rate), so bit-level
+MRC is structurally impossible — the soft-decision Viterbi already
+is the optimal combiner, and per-partition confidence weighting feeds
+it exactly the numbers MRC would have used. Stage 3 is therefore
+subsumed by stages 1+2 on FM. (True sideband diversity exists in the
+AM mode — `am_diversity` in the source — where a future AM campaign
+can do real combining.)
+
+### Final certification (2026-07-18)
+
+`ALBACORE=1` (master switch = robust tracking + partition weighting)
+vs stock, decoded audio seconds, identical captures, 14 cases: strong
+station, native cliff, natural-fade field capture, clean AWGN ladder
+edge, one-partition jam edge (3 seeds × 2 levels), and the field
+specimen trimmed to its cliff:
+
+**stock 210.0 s → ALBACORE 371.8 s (1.77×) — 9 wins, 5 ties, 0 losses.**
+
+Highlights: live fade rescue 0 → 9.8 s; field specimen at +2 dB noise
+0 → 49.1 s; jammed cliffs resurrected from 0 in five configurations;
+clean-signal output byte-identical with everything off.
 
 **Field-validated the same evening** on a live capture of a station
 with real one-sided sideband damage (`lab/hd_field_survey.py`): during
