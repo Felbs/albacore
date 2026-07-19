@@ -157,3 +157,13 @@ is therefore two stacked failures: stock dies at the SYNC layer (already
 solved by robust tracking), and the remaining failure is pure
 channel-estimation lag with lock held. Costas-gain speedup and
 decision-directed re-estimation target exactly this layer.
+
+## THE WALL FALLS (night shift, 2026-07-19 ~04:30)
+`ALBACORE_COSTAS_BW=<mult>` scales the per-ref Costas loop bandwidth.
+Measured on two-ray a=0.9 fading (real listenable seconds of ~27):
+fd=5 Hz: pair 0 -> x2/x4/x8 ALL 27/27. fd=8 Hz: x8 = 27/27. The
+estimation-lag hypothesis from the autopsy is CONFIRMED and SOLVED for
+fixed known doppler. The cost is equally textbook: at +8 dB AWGN (static
+channel) x4 collapses 27->0 - wide loops track noise. Endgame: adaptive
+bandwidth from per-block phase-innovation variance (next build). With it,
+the receiver would hold from parked-car to highway speeds automatically.

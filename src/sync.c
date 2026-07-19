@@ -1118,6 +1118,14 @@ void sync_reset(sync_t *st)
 void sync_init(sync_t *st, input_t *input)
 {
     float loop_bw = 0.05, damping = 0.70710678;
+    // albacore: ALBACORE_COSTAS_BW=<mult> scales the per-ref Costas loop
+    // bandwidth (fd=5 autopsy: sync holds but channel-estimation LAGS —
+    // wider loops track faster phase at an AWGN noise cost). 1.0 = stock.
+    {
+        const char *cb = getenv("ALBACORE_COSTAS_BW");
+        if (cb && atof(cb) > 0)
+            loop_bw *= (float)atof(cb);
+    }
     float denom = 1 + (2 * damping * loop_bw) + (loop_bw * loop_bw);
     st->alpha = (4 * damping * loop_bw) / denom;
     st->beta = (4 * loop_bw * loop_bw) / denom;
