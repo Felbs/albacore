@@ -17,7 +17,8 @@ import hd_radio
 
 FS = 2976750.0
 NFFT = 8192
-TMP = Path(r"C:\Users\emane\.claude\jobs\3948c3da\tmp")
+TMP = Path(os.environ.get("ALBACORE_TMP", str(Path.home() / ".albacore_tmp")))
+TMP.mkdir(exist_ok=True)
 import os
 NRSC5 = os.environ.get("NRSC5_EXE", r"C:\Tools\nrsc5\nrsc5.exe")
 

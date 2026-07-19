@@ -11,5 +11,6 @@ set "PROG=%~2"
 if "%PROG%"=="" set "PROG=0"
 echo === albacore live: %MHZ% MHz program %PROG% (ALBACORE=1) ===
 echo close this window (or Ctrl+C) to stop and release the SDR
-"C:\Users\emane\radioconda\python.exe" "Z:\src\albacore\lab\hd_listen.py" --mhz %MHZ% --prog %PROG%
+if not defined RADIOCONDA_PY set "RADIOCONDA_PY=%USERPROFILE%\radioconda\python.exe"
+"%RADIOCONDA_PY%" "%~dp0hd_listen.py" --mhz %MHZ% --prog %PROG%
 pause

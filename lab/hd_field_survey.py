@@ -7,7 +7,7 @@ spread = selectivity fingerprint). Ranks the field for stock-vs-knobs A/B.
 
 Run with radioconda python (needs SoapySDR).
 """
-import argparse, json, re, subprocess, sys, time
+import argparse, json, os, re, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
@@ -17,7 +17,8 @@ import hd_radio
 from hd_radio import FS_CAP
 
 CORPUS = Path(r"Z:\src\gr-radiotuna\lab\hd_cliff")
-TMP = Path(r"C:\Users\emane\.claude\jobs\3948c3da\tmp")
+TMP = Path(os.environ.get("ALBACORE_TMP", str(Path.home() / ".albacore_tmp")))
+TMP.mkdir(exist_ok=True)
 NRSC5 = r"C:\Tools\nrsc5\nrsc5.exe"
 
 

@@ -22,7 +22,8 @@ meter = importlib.util.module_from_spec(_s)
 _s.loader.exec_module(meter)
 
 EXE = r"Z:\src\albacore\build\src\nrsc5.exe"
-TMP = Path(r"C:\Users\emane\.claude\jobs\3948c3da\tmp")
+TMP = Path(os.environ.get("ALBACORE_TMP", str(Path.home() / ".albacore_tmp")))
+TMP.mkdir(exist_ok=True)
 FS_CAP = hd_radio.FS_CAP
 
 
