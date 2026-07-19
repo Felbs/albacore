@@ -16,16 +16,20 @@ Research questions (design notes in gr-radiotuna docs/SCIENCE.md sec 7):
   Q4  RFI timeline (fixed probe = the control instrument) + one knob A/B
       (stock vs ALBACORE=1 vs +auto) per slot on the cliffiest cell.
 
-v2.1 (slot-0 lessons, 13:37Z):
-  - ONE SDR SESSION PER SLOT, retune/antenna-switch on the live stream.
-    v2.0 opened/closed the device ~20x per slot and the SDRplay API
-    service wedged after 7 ("no available RSP devices") — the rapid
-    open/close storm is the service's hot-replug analog.
-  - DUD-BURN after every open + 0.6 s settle-flush after every retune:
-    the 1-2 captures right after a service heal read healthy rms but
-    ~15 dB depressed pilot SNR (degraded early-session streaming) —
-    they were polluting the science rows.
-  - Capture wall-time logged (wall >> secs = sample starvation).
+v2.2 (the REAL slot-0/1/2 lesson, 14:40Z): the "wedges" and the
+"starvation" were the WARDEN — a second daemon rotating its own SDR
+test campaigns into every gap the lab left. One radio, single-tenant,
+two uncoordinated clients. The warden stands down today; the lab
+design returns to the PROVEN envelope (open/close per capture at
+<=1.3/min pace, exactly what the 7/19 stress runs did flawlessly):
+  - ONE ANTENNA PER SLOT (rotate A->B->C across slots) — no live
+    antenna switching at all; each antenna samples every station
+    every 3 slots (75 min), rotation debiases time drift.
+  - Paced cycles (>=45 s each), starved captures (wall >> secs, e.g.
+    a wxTuna Meteor pass takes the radio — passes outrank us by
+    design) are tagged +starved and excluded from analysis.
+  - Slots 0-2 (contention era) stay in the CSV but are excluded from
+    the league; v2.2 numbering starts at slot 3.
 
 Methodology guards (unchanged): rotated station order, referee decode
 (stock nrsc5), analog dials from the same specimen, fixed RFI probe,
@@ -77,76 +81,6 @@ def cal_gains(ant, mhz):
     return 40.0, "5"
 
 
-class Session:
-    """One SDR session per slot: open once, retune per cell."""
-
-    def __init__(self):
-        hd_radio._ensure_sdr_dll_path()
-        import SoapySDR
-        from SoapySDR import SOAPY_SDR_RX, SOAPY_SDR_CS16
-        SoapySDR.SoapySDR_setLogLevel(SoapySDR.SOAPY_SDR_FATAL)
-        self.RX = SOAPY_SDR_RX
-        self.sdr = SoapySDR.Device("driver=sdrplay")
-        self.sdr.setSampleRate(self.RX, 0, fs.FS_CAP)
-        try:
-            self.sdr.setGainMode(self.RX, 0, False)
-        except Exception:
-            pass
-        self.st = self.sdr.setupStream(self.RX, SOAPY_SDR_CS16)
-        self.sdr.activateStream(self.st)
-        self.buf = np.empty(2 * 262144, np.int16)
-        # dud-burn: the first post-open stream may be zeros or degraded
-        pk = self._flush(1.0)
-        if pk < 20:
-            log("  session dud (zeros) - reopening once")
-            self.close()
-            time.sleep(1)
-            self.__init__()
-
-    def _flush(self, secs):
-        """Discard the settle window; return the peak seen."""
-        n_want = int(secs * fs.FS_CAP)
-        got, pk, t0 = 0, 0, time.time()
-        while got < n_want and time.time() - t0 < secs * 2 + 2:
-            r = self.sdr.readStream(self.st, [self.buf], 262144,
-                                    timeoutUs=1000000)
-            if r.ret > 0:
-                got += r.ret
-                pk = max(pk, int(np.abs(self.buf[:2 * r.ret]).max()))
-        return pk
-
-    def tune(self, mhz, ant, ifgr, rfgain):
-        self.sdr.setFrequency(self.RX, 0, mhz * 1e6)
-        self.sdr.setAntenna(self.RX, 0, ant)
-        self.sdr.setGain(self.RX, 0, "IFGR", float(ifgr))
-        try:
-            self.sdr.writeSetting("rfgain_sel", str(rfgain))
-        except Exception:
-            pass
-        self._flush(0.6)
-
-    def capture(self, secs, path):
-        n_want = int(secs * fs.FS_CAP)
-        got, t0 = 0, time.time()
-        with open(path, "wb") as f:
-            while got < n_want and time.time() - t0 < secs * 2 + 10:
-                r = self.sdr.readStream(self.st, [self.buf], 262144,
-                                        timeoutUs=1000000)
-                if r.ret > 0:
-                    n = min(r.ret, n_want - got)
-                    self.buf[:2 * n].tofile(f)
-                    got += n
-        return got / fs.FS_CAP, time.time() - t0
-
-    def close(self):
-        try:
-            self.sdr.deactivateStream(self.st)
-            self.sdr.closeStream(self.st)
-        except Exception:
-            pass
-        self.sdr = None
-
-
 def rf_facts(cs16_path):
     raw = np.fromfile(cs16_path, dtype=np.int16, count=2 * 3_000_000)
     x = raw[0::2].astype(np.float32) + 1j * raw[1::2].astype(np.float32)
@@ -178,55 +112,70 @@ def fm_dials(cs16_path, secs=8.0):
             tele.get("audio_snr_db", float("nan")))
 
 
-def rfi_probe(ses):
-    """Noise floor on rabbit @93.3, fixed gains — the control."""
-    ses.tune(93.3, "Antenna A", 40, "5")
-    secs, wall = ses.capture(4, TMPCAP)
-    raw = np.fromfile(TMPCAP, dtype=np.int16)
-    x = (raw[0::2].astype(np.float32) + 1j * raw[1::2].astype(np.float32)) / 32768.0
-    N = 8192
-    seg = x[: len(x) // N * N].reshape(-1, N)
-    psd = np.fft.fftshift(
-        (np.abs(np.fft.fft(seg * np.hanning(N), axis=1)) ** 2).mean(0))
-    db = 10 * np.log10(psd + 1e-12)
-    floor = float(np.median(db[4096 + 700:4096 + 1200]))
-    sb = float(db[4096 + 357:4096 + 545].mean())
-    return floor, sb - floor
+def cap_env(mhz, ant, ifgr, rfgain, secs, tag):
+    """Paced fs.capture with env-pinned antenna/gains; returns
+    (path, secs, wall). Caller deletes the file."""
+    os.environ["HD_ANT"] = ant
+    os.environ["HD_IFGR"] = str(ifgr)
+    os.environ["HD_RFGAIN"] = str(rfgain)
+    try:
+        return fs.capture(mhz, secs, tag)
+    finally:
+        os.environ.pop("HD_IFGR", None)
+        os.environ.pop("HD_RFGAIN", None)
 
 
-def one_capture(ses, mhz, ant, ifgr, rfgain, tag, slot, rfi):
-    ses.tune(mhz, ant, ifgr, rfgain)
-    secs, wall = ses.capture(14, TMPCAP)
-    if wall > secs * 1.3:
-        log(f"  !! starvation: {mhz:.1f} {ANT_NICK[ant]} wall {wall:.1f}s "
-            f"for {secs:.1f}s of samples")
-    rms, inch = rf_facts(TMPCAP)
-    res = fs.nrsc5_replay(TMPCAP, secs)
-    psnr, asnr = fm_dials(TMPCAP)
-    row = {"utc": datetime.now(timezone.utc).isoformat(), "slot": slot,
-           "mhz": mhz, "ant": ANT_NICK[ant], "ifgr": ifgr,
-           "rfgain": rfgain, "tag": tag, "rms": round(rms, 1),
-           "inch_db": round(inch, 1), "sync": int(res["sync"]),
-           "ber": res["ber"], "mer_lo": res["mer_lo"],
-           "mer_hi": res["mer_hi"], "audio_s": round(res["audio_s"], 1),
-           "pilot_snr_db": psnr, "fm_audio_snr_db": asnr,
-           "rfi_floor_db": round(rfi[0], 1),
-           "rfi_margin_db": round(rfi[1], 1)}
-    with open(CSV, "a", newline="") as f:
-        csv.DictWriter(f, COLS).writerow(row)
-    return row
+def one_capture(mhz, ant, ifgr, rfgain, tag, slot, rfi):
+    out, secs, wall = cap_env(mhz, ant, ifgr, rfgain, 14, "cube")
+    starved = wall > secs * 1.3 or secs < 12
+    try:
+        if starved:
+            log(f"  !! starved capture: {mhz:.1f} {ANT_NICK[ant]} "
+                f"{secs:.1f}s in {wall:.1f}s wall (excluded)")
+            tag += "+starved"
+            rms = inch = psnr = asnr = float("nan")
+            res = {"sync": 0, "ber": float("nan"), "mer_lo": float("nan"),
+                   "mer_hi": float("nan"), "audio_s": 0.0}
+        else:
+            rms, inch = rf_facts(out)
+            res = fs.nrsc5_replay(out, secs)
+            psnr, asnr = fm_dials(out)
+        row = {"utc": datetime.now(timezone.utc).isoformat(), "slot": slot,
+               "mhz": mhz, "ant": ANT_NICK[ant], "ifgr": ifgr,
+               "rfgain": rfgain, "tag": tag,
+               "rms": rms if rms != rms else round(rms, 1),
+               "inch_db": inch if inch != inch else round(inch, 1),
+               "sync": int(res["sync"]), "ber": res["ber"],
+               "mer_lo": res["mer_lo"], "mer_hi": res["mer_hi"],
+               "audio_s": round(res["audio_s"], 1),
+               "pilot_snr_db": psnr, "fm_audio_snr_db": asnr,
+               "rfi_floor_db": round(rfi[0], 1),
+               "rfi_margin_db": round(rfi[1], 1)}
+        with open(CSV, "a", newline="") as f:
+            csv.DictWriter(f, COLS).writerow(row)
+        return row
+    finally:
+        Path(out).unlink(missing_ok=True)
+        Path(str(out) + ".json").unlink(missing_ok=True)
 
 
-def knob_ab(ses, mhz, ant, slot):
+def knob_ab(mhz, ant, slot):
     """Anti-regression: 3-way decode of the cliffiest cell, every slot."""
     ifgr, rfg = cal_gains(ant, mhz)
-    ses.tune(mhz, ant, ifgr, rfg)
-    secs, wall = ses.capture(20, TMPCAP)
-    res = fs.nrsc5_replay(TMPCAP, secs)
+    out, secs, wall = cap_env(mhz, ant, ifgr, rfg, 20, "knobab")
+    try:
+        _knob_ab_inner(out, secs, mhz, ant, slot)
+    finally:
+        Path(out).unlink(missing_ok=True)
+        Path(str(out) + ".json").unlink(missing_ok=True)
+
+
+def _knob_ab_inner(out, secs, mhz, ant, slot):
+    res = fs.nrsc5_replay(out, secs)
     if not res["sync"]:
         log(f"  knobA/B {mhz:.1f} {ANT_NICK[ant]}: no sync, skipped")
         return
-    raw = np.fromfile(TMPCAP, dtype=np.int16)
+    raw = np.fromfile(out, dtype=np.int16)
     cu8p = Path(r"Z:\src\albacore\lab\out") / "daylab.cu8"
     hd_radio.cs16_to_cu8(hd_radio.decimate2_cs16(raw)).tofile(cu8p)
     ab = v1.three_way(cu8p)
@@ -258,85 +207,88 @@ def main():
     until = datetime.fromisoformat(a.until.replace("Z", "+00:00"))
     if a.start_at:
         start = datetime.fromisoformat(a.start_at.replace("Z", "+00:00"))
-        log(f"3-antenna day lab v2.1 armed; sleeping until {start:%H:%M}Z")
+        log(f"3-antenna day lab v2.2 armed; sleeping until {start:%H:%M}Z")
         while datetime.now(timezone.utc) < start:
             time.sleep(30)
-    log(f"3-ANTENNA DAY LAB v2.1: {a.mhz} x {[ANT_NICK[x] for x in ANTS]}"
-        f" every {a.slot_min}min until {until:%H:%M}Z (one session/slot)")
+    log(f"3-ANTENNA DAY LAB v2.2: {a.mhz}, one antenna per slot "
+        f"(A->B->C), every {a.slot_min}min until {until:%H:%M}Z")
     CSV.parent.mkdir(exist_ok=True)
     if not CSV.exists():
         with open(CSV, "w", newline="") as f:
             csv.DictWriter(f, COLS).writeheader()
-    cells = [(m, ant) for m in a.mhz for ant in ANTS]
-    slot = 1                       # slot 0 ran under v2.0
+    slot = 3                       # 0-2 = the contention era (excluded)
     while datetime.now(timezone.utc) < until:
         slot_t0 = time.time()
         if v1.listener_running():
             log("user listening - slot skipped")
         else:
-            ses = None
+            ant = ANTS[slot % 3]
             healed = False
             try:
-                try:
-                    ses = Session()
-                except Exception as e:
-                    log(f"open fail ({str(e)[:40]}) - healing")
-                    v1.heal_service()
-                    healed = True
-                    ses = Session()
-                rfi = rfi_probe(ses)
-                log(f"slot {slot}: RFI floor {rfi[0]:.1f} dB, "
-                    f"margin {rfi[1]:+.1f} dB")
+                rfi = v1.rfi_probe()
+                log(f"slot {slot} [{ANT_NICK[ant]}]: RFI floor "
+                    f"{rfi[0]:.1f} dB, margin {rfi[1]:+.1f} dB")
+                time.sleep(6)      # pace: stay in the proven envelope
                 order = (a.mhz[slot % len(a.mhz):]
                          + a.mhz[:slot % len(a.mhz)])
-                cliffiest = (None, None, 1e9)
+                cliffiest = (None, 1e9)
                 for mhz in order:
-                    for ant in ANTS:
-                        ifgr, rfg = cal_gains(ant, mhz)
-                        try:
-                            row = one_capture(ses, mhz, ant, ifgr, rfg,
-                                              "base", slot, rfi)
-                        except Exception as e:
-                            log(f"  {mhz:5.1f} {ANT_NICK[ant]} fail "
-                                f"({str(e)[:40]})"
-                                + ("" if healed else " - heal+reopen"))
-                            if healed:
-                                raise           # second failure ends slot
-                            ses.close()
-                            v1.heal_service()
-                            healed = True
-                            ses = Session()
-                            continue
+                    cyc_t0 = time.time()
+                    ifgr, rfg = cal_gains(ant, mhz)
+                    try:
+                        row = one_capture(mhz, ant, ifgr, rfg,
+                                          "base", slot, rfi)
                         log(f"  {mhz:5.1f} {ANT_NICK[ant]:11s} "
                             f"sync={row['sync']} ber={row['ber']:.4f} "
                             f"aud={row['audio_s']:4.1f}s "
                             f"pilot={row['pilot_snr_db']:5.1f}dB")
                         mer = row["mer_lo"]
-                        if row["sync"] and mer == mer and mer < cliffiest[2]:
-                            cliffiest = (mhz, ant, mer)
-                mhz, ant = cells[slot % len(cells)]
+                        if row["sync"] and mer == mer and mer < cliffiest[1]:
+                            cliffiest = (mhz, mer)
+                    except Exception as e:
+                        log(f"  {mhz:5.1f} {ANT_NICK[ant]} fail "
+                            f"({str(e)[:40]})"
+                            + ("" if healed else " - healing"))
+                        if healed:
+                            raise       # second failure ends the slot
+                        v1.heal_service()
+                        healed = True
+                        time.sleep(8)
+                        try:            # burner: eat the degraded session
+                            b, _, _ = cap_env(93.3, ant, 40, "5", 3, "burn")
+                            Path(b).unlink(missing_ok=True)
+                            Path(str(b) + ".json").unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                    # pace every cycle to >=45 s regardless of outcome
+                    rest = 45 - (time.time() - cyc_t0)
+                    if rest > 0:
+                        time.sleep(rest)
+                # rotating mini gain sweep on THIS slot's antenna
+                mhz = a.mhz[(slot // 3) % len(a.mhz)]
                 ifgr0, rfg = cal_gains(ant, mhz)
                 for d in (-4, +4):
+                    cyc_t0 = time.time()
                     ifgr = max(20, min(59, ifgr0 + d))
                     try:
-                        row = one_capture(ses, mhz, ant, ifgr, rfg,
+                        row = one_capture(mhz, ant, ifgr, rfg,
                                           f"sweep{d:+d}", slot, rfi)
                         log(f"  sweep {mhz:5.1f} {ANT_NICK[ant]} "
                             f"ifgr={ifgr:.0f} sync={row['sync']} "
-                            f"aud={row['audio_s']:4.1f}s")
+                            f"aud={row['audio_s']:4.1f}s "
+                            f"pilot={row['pilot_snr_db']:5.1f}dB")
                     except Exception as e:
                         log(f"  sweep skip ({str(e)[:40]})")
+                    rest = 45 - (time.time() - cyc_t0)
+                    if rest > 0:
+                        time.sleep(rest)
                 if cliffiest[0] is not None:
                     try:
-                        knob_ab(ses, cliffiest[0], cliffiest[1], slot)
+                        knob_ab(cliffiest[0], ant, slot)
                     except Exception as e:
                         log(f"  knobA/B skip ({str(e)[:40]})")
             except Exception as e:
                 log(f"slot {slot} aborted ({str(e)[:60]})")
-            finally:
-                if ses is not None:
-                    ses.close()
-                TMPCAP.unlink(missing_ok=True)
             log(f"slot {slot} done in {time.time()-slot_t0:.0f}s")
         slot += 1
         wait = a.slot_min * 60 - (time.time() - slot_t0)

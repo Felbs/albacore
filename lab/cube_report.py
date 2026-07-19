@@ -26,10 +26,15 @@ def main():
     if not CUBE.exists():
         print("no cube data yet")
         return
-    rows = list(csv.DictReader(open(CUBE)))
+    raw = list(csv.DictReader(open(CUBE)))
+    # hygiene: slots 0-2 = the warden-contention era; +starved = the
+    # radio was contended/taken (e.g. a Meteor pass) mid-capture
+    rows = [r for r in raw if int(r["slot"]) >= 3
+            and "starved" not in r["tag"]]
     base = [r for r in rows if r["tag"] == "base"]
-    print(f"cube rows: {len(rows)} ({len(base)} base, "
-          f"{len(rows)-len(base)} sweep) | slots seen: "
+    print(f"cube rows: {len(rows)} clean of {len(raw)} "
+          f"({len(raw)-len(rows)} excluded: contention-era/starved) | "
+          f"{len(base)} base, {len(rows)-len(base)} sweep | slots: "
           f"{len({r['slot'] for r in rows})}")
 
     # per-station antenna league
