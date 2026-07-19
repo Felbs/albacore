@@ -288,6 +288,15 @@ static float calc_smag(sync_t *st, unsigned int ref)
 // per the reference-receiver architecture (US7724850 family).
 static float alb_g2[FFT_FM][BLKSZ];
 
+// albacore: ALBACORE_MMSE=1 — MMSE equalization instead of zero-forcing:
+// C = conj(G)/(|G|^2 + lambda) with lambda = (partition mean |G|^2)/SNR,
+// SNR taken from the previous block's per-partition modulation error.
+// Faded carriers are scaled DOWN instead of noise-amplified-then-clamped,
+// so soft-bit amplitude carries reliability into the Viterbi natively.
+// lambda = 0 (gate off) is exactly stock ZF.
+static float alb_mmse_lambda[FFT_FM];
+static int alb_mmse_on = -1;
+
 static void adjust_data(sync_t *st, unsigned int lower, unsigned int upper)
 {
     float smag0, smag19;
@@ -302,8 +311,13 @@ static void adjust_data(sync_t *st, unsigned int lower, unsigned int upper)
         for (int k = 1; k < PARTITION_WIDTH_FM; k++)
         {
             float complex gain = k * smag19 * upper_phase + (PARTITION_WIDTH_FM - k) * smag0 * lower_phase;
-            // average phase difference
-            float complex C = CMPLXF(PARTITION_WIDTH_FM, PARTITION_WIDTH_FM) / gain;
+            float complex C;
+            if (alb_mmse_on == 1 && alb_mmse_lambda[lower] > 0)
+                C = CMPLXF(PARTITION_WIDTH_FM, PARTITION_WIDTH_FM) * conjf(gain)
+                    / (normf(gain) + alb_mmse_lambda[lower]);
+            else
+                // average phase difference (stock zero-forcing)
+                C = CMPLXF(PARTITION_WIDTH_FM, PARTITION_WIDTH_FM) / gain;
             // adjust sample
             st->buffer[lower + k][n] *= C;
             alb_g2[lower + k][n] = normf(gain);
@@ -572,6 +586,24 @@ void sync_process_fm(sync_t *st)
         {
             g2_lb_part[i] /= (PARTITION_DATA_CARRIERS * BLKSZ);
             g2_ub_part[i] /= (PARTITION_DATA_CARRIERS * BLKSZ);
+        }
+        if (alb_mmse_on < 0)
+        {
+            const char *mm = getenv("ALBACORE_MMSE");
+            alb_mmse_on = (mm && atoi(mm) != 0) ? 1 : 0;
+        }
+        if (alb_mmse_on == 1)
+        {
+            // lambda for NEXT block's equalizer: (mean |gain|^2) / SNR,
+            // SNR from this block's post-EQ modulation error
+            const float sig_p = 2.0f * BLKSZ * (float)PARTITION_DATA_CARRIERS;
+            for (i = 0; (int)i < partitions_per_band; i++)
+            {
+                alb_mmse_lambda[LB_START + i * PARTITION_WIDTH_FM] =
+                    g2_lb_part[i] * error_lb_part[i] / sig_p;
+                alb_mmse_lambda[UB_END - (i + 1) * PARTITION_WIDTH_FM] =
+                    g2_ub_part[i] * error_ub_part[i] / sig_p;
+            }
         }
         for (i = 0; i < partitions_per_band; i++)
         {
