@@ -43,9 +43,14 @@ def log(m):
 
 
 def listener_running():
+    # Name filter first: the query's OWN command line contains the
+    # pattern (the pgrep self-match trap, which bit again 7/19 by
+    # skipping slot 0 as "user listening" forever).
     try:
         r = subprocess.run(["powershell", "-Command",
-            "(Get-CimInstance Win32_Process | Where-Object {$_.CommandLine -match 'hd_listen'} | Measure-Object).Count"],
+            "(Get-CimInstance Win32_Process | Where-Object {$_.Name -eq "
+            "'python.exe' -and $_.CommandLine -match 'hd_listen'} | "
+            "Measure-Object).Count"],
             capture_output=True, text=True, timeout=60)
         return int(r.stdout.strip() or 0) > 0
     except Exception:
