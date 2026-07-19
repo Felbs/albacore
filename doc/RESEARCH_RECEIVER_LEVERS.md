@@ -177,3 +177,9 @@ bandwidth x2 up to x8 while decode stays broken; slow decay on calm.
 Acid test (real listenable seconds of ~27): clean 27, AWGN-trap 27 (no
 false widening), slow fades 27, fd=5 0->27/27, fd=8 0->22. Parked-to-
 highway mobility with no manual knob.
+
+### Auto-BW multi-seed replication (~05:30)
+fd=5: 6/6 seeds rescued (27,27,27,27,27,14 vs pair all-zero; both echo
+delays). fd=8 clean: 3/3 (22,22,12). AWGN trap: neutral within noise
+(one seed 26->21 = small false-widening cost at the cliff edge).
+UNCONQUERED: fd=8 + added noise (0/0/0) - the next frontier marker.
