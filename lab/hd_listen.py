@@ -61,18 +61,42 @@ def main():
 
     print(f"=== live {a.mhz} MHz program {a.prog} via {Path(NRSC5).name} "
           f"(ALBACORE={os.environ.get('ALBACORE','0')}) ===", flush=True)
-    buf = np.empty(2 * 65536, np.int16)
+
+    # Two-thread pump: the SDR reader does NOTHING but big-gulp reads
+    # (decimation in the read loop starves the stream -> dropped samples
+    # -> constant glitch-garble, the 'staticky radio' failure). The
+    # converter thread decimates/writes at its leisure from a queue.
+    import queue as _q
+    iq_q = _q.Queue(maxsize=64)
+    drops = [0]
+
+    def sdr_reader():
+        while not stop.is_set():
+            b = np.empty(2 * 262144, np.int16)
+            r = sdr.readStream(st, [b], 262144, timeoutUs=1000000)
+            if r.ret > 0:
+                try:
+                    iq_q.put_nowait(b[:2 * r.ret])
+                except _q.Full:
+                    drops[0] += 1
+
+    threading.Thread(target=sdr_reader, daemon=True).start()
     mpv_started = False
     try:
         while not stop.is_set():
-            r = sdr.readStream(st, [buf], 65536, timeoutUs=500000)
-            if r.ret > 0:
-                cu8 = hd_radio.cs16_to_cu8(hd_radio.decimate2_cs16(buf[:2 * r.ret]))
-                try:
-                    nr.stdin.write(cu8.tobytes())
-                except (BrokenPipeError, OSError):
-                    print("decoder exited")
-                    break
+            try:
+                chunk = iq_q.get(timeout=1.0)
+            except _q.Empty:
+                continue
+            cu8 = hd_radio.cs16_to_cu8(hd_radio.decimate2_cs16(chunk))
+            try:
+                nr.stdin.write(cu8.tobytes())
+            except (BrokenPipeError, OSError):
+                print("decoder exited")
+                break
+            if drops[0]:
+                print(f"  [pump] queue overflow x{drops[0]}", flush=True)
+                drops[0] = 0
             if not mpv_started and wav.exists() and wav.stat().st_size > 300_000:
                 subprocess.Popen([MPV, str(wav), "--volume=110",
                                   "--keep-open=yes", "--force-seekable=yes"])
