@@ -31,6 +31,19 @@ design returns to the PROVEN envelope (open/close per capture at
   - Slots 0-2 (contention era) stay in the CSV but are excluded from
     the league; v2.2 numbering starts at slot 3.
 
+v2.3 (coexistence guard, 14:45Z): the warden stood down, but wxTuna's
+watch daemon still owns the dial during every Meteor pass — and it
+MUST (137.9 MHz LRPT passes are unrepeatable). So the lab stops
+competing for the one radio and YIELDS instead. Before every slot AND
+every capture it consults wxTuna's own heartbeat (wxsat_status.json,
+the same file its panel reads) and stands off for the whole predicted
+pass window (rec_start..los, warden's 3-min buffer). A yielded
+slot/capture is logged "yielded", never "failed", counts toward
+nothing, and — critically — NEVER triggers a service heal: restarting
+SDRplayAPIService under a live pass is exactly the harm we avoid. This
+consults, never opens, the device; the reactive net (the SoapySDR
+"no available RSP" signature) catches any pass we didn't predict.
+
 Methodology guards (unchanged): rotated station order, referee decode
 (stock nrsc5), analog dials from the same specimen, fixed RFI probe,
 specimens deleted after metric extraction, listener guard, one heal
@@ -40,7 +53,7 @@ Usage:
   hd_day_lab2.py --until 2026-07-19T21:50:00Z [--start-at ...Z]
 """
 import argparse, csv, json, os, subprocess, sys, time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import numpy as np
 
@@ -58,6 +71,12 @@ TMPCAP = Path(r"Z:\src\albacore\lab\out\cube_specimen.cs16")
 ANTS = ["Antenna A", "Antenna B", "Antenna C"]
 ANT_NICK = {"Antenna A": "rabbit", "Antenna B": "oldfaithful",
             "Antenna C": "discone"}
+# Coexistence: wxTuna's watch daemon publishes this heartbeat (its panel
+# reads it too). We consult it to yield the one radio during Meteor passes.
+WXSTATUS = Path(r"Z:\src\wxTuna\lab\wxsat_status.json")
+YIELD_BUFFER_S = 180     # stand off the dial this long before a pass AOS
+WX_TTL_S = 180           # wxsat heartbeat older than this = stale (ignore state)
+BUSY_SIG = ("no available RSP", "SoapySDR::Device::make")
 COLS = ["utc", "slot", "mhz", "ant", "ifgr", "rfgain", "tag", "rms",
         "inch_db", "sync", "ber", "mer_lo", "mer_hi", "audio_s",
         "pilot_snr_db", "fm_audio_snr_db", "rfi_floor_db", "rfi_margin_db"]
@@ -68,6 +87,50 @@ def log(m):
     print(line, flush=True)
     with open(LOG, "a") as f:
         f.write(line + "\n")
+
+
+class DeviceYield(Exception):
+    """Another SDR client holds the RSPdx — coexist (yield), never heal."""
+
+
+def is_busy_error(e):
+    """True if an exception carries the SoapySDR device-busy signature — the
+    same string the warden matched: 'no available RSP devices found'."""
+    s = str(e)
+    return any(sig in s for sig in BUSY_SIG)
+
+
+def _iso(v):
+    try:
+        return (datetime.fromisoformat(v.replace("Z", "+00:00"))
+                if v else None)
+    except Exception:
+        return None
+
+
+def sdr_held_by_other(now=None):
+    """Coexistence guard for the one-radio rig. Returns a reason string when
+    another SDR client — above all wxTuna's watch daemon during a Meteor LRPT
+    pass — holds or is about to need the RSPdx, else None. Never opens the
+    device: it reads wxTuna's own heartbeat (wxsat_status.json). Passes
+    outrank the lab by design, so we stand off for the whole predicted
+    window (rec_start-buffer .. los+buffer), the same reservation the warden
+    honored. No status file (watcher not running) -> proceed normally."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        st = json.loads(WXSTATUS.read_text())
+    except Exception:
+        return None
+    rec, los = _iso(st.get("rec_start")), _iso(st.get("next_los"))
+    if rec and los and (rec - timedelta(seconds=YIELD_BUFFER_S)
+                        <= now <= los + timedelta(seconds=YIELD_BUFFER_S)):
+        return (f"wxTuna Meteor pass {st.get('next_sat', '?')} "
+                f"{rec:%H:%M}-{los:%H:%M}Z")
+    upd = _iso(st.get("updated"))
+    if (upd and (now - upd).total_seconds() < WX_TTL_S
+            and st.get("state") == "recording"):
+        return f"wxTuna recording {st.get('sat', '?')}"
+    return None
 
 
 def cal_gains(ant, mhz):
@@ -126,7 +189,15 @@ def cap_env(mhz, ant, ifgr, rfgain, secs, tag):
 
 
 def one_capture(mhz, ant, ifgr, rfgain, tag, slot, rfi):
-    out, secs, wall = cap_env(mhz, ant, ifgr, rfgain, 14, "cube")
+    held = sdr_held_by_other()
+    if held:
+        raise DeviceYield(held)
+    try:
+        out, secs, wall = cap_env(mhz, ant, ifgr, rfgain, 14, "cube")
+    except Exception as e:
+        if is_busy_error(e):
+            raise DeviceYield("RSPdx busy (no available RSP device)")
+        raise
     starved = wall > secs * 1.3 or secs < 12
     try:
         if starved:
@@ -161,8 +232,16 @@ def one_capture(mhz, ant, ifgr, rfgain, tag, slot, rfi):
 
 def knob_ab(mhz, ant, slot):
     """Anti-regression: 3-way decode of the cliffiest cell, every slot."""
+    held = sdr_held_by_other()
+    if held:
+        raise DeviceYield(held)
     ifgr, rfg = cal_gains(ant, mhz)
-    out, secs, wall = cap_env(mhz, ant, ifgr, rfg, 20, "knobab")
+    try:
+        out, secs, wall = cap_env(mhz, ant, ifgr, rfg, 20, "knobab")
+    except Exception as e:
+        if is_busy_error(e):
+            raise DeviceYield("RSPdx busy (no available RSP device)")
+        raise
     try:
         _knob_ab_inner(out, secs, mhz, ant, slot)
     finally:
@@ -207,10 +286,10 @@ def main():
     until = datetime.fromisoformat(a.until.replace("Z", "+00:00"))
     if a.start_at:
         start = datetime.fromisoformat(a.start_at.replace("Z", "+00:00"))
-        log(f"3-antenna day lab v2.2 armed; sleeping until {start:%H:%M}Z")
+        log(f"3-antenna day lab v2.3 armed; sleeping until {start:%H:%M}Z")
         while datetime.now(timezone.utc) < start:
             time.sleep(30)
-    log(f"3-ANTENNA DAY LAB v2.2: {a.mhz}, one antenna per slot "
+    log(f"3-ANTENNA DAY LAB v2.3: {a.mhz}, one antenna per slot "
         f"(A->B->C), every {a.slot_min}min until {until:%H:%M}Z")
     CSV.parent.mkdir(exist_ok=True)
     if not CSV.exists():
@@ -219,8 +298,11 @@ def main():
     slot = 3                       # 0-2 = the contention era (excluded)
     while datetime.now(timezone.utc) < until:
         slot_t0 = time.time()
+        held = sdr_held_by_other()
         if v1.listener_running():
             log("user listening - slot skipped")
+        elif held:
+            log(f"slot {slot} yielded - {held} (pass outranks the lab)")
         else:
             ant = ANTS[slot % 3]
             healed = False
@@ -245,6 +327,9 @@ def main():
                         mer = row["mer_lo"]
                         if row["sync"] and mer == mer and mer < cliffiest[1]:
                             cliffiest = (mhz, mer)
+                    except DeviceYield as y:
+                        log(f"  {mhz:5.1f} {ANT_NICK[ant]:11s} yielded "
+                            f"({str(y)[:48]})")
                     except Exception as e:
                         log(f"  {mhz:5.1f} {ANT_NICK[ant]} fail "
                             f"({str(e)[:40]})"
@@ -277,6 +362,9 @@ def main():
                             f"ifgr={ifgr:.0f} sync={row['sync']} "
                             f"aud={row['audio_s']:4.1f}s "
                             f"pilot={row['pilot_snr_db']:5.1f}dB")
+                    except DeviceYield as y:
+                        log(f"  sweep {mhz:5.1f} {ANT_NICK[ant]} yielded "
+                            f"({str(y)[:40]})")
                     except Exception as e:
                         log(f"  sweep skip ({str(e)[:40]})")
                     rest = 45 - (time.time() - cyc_t0)
@@ -285,6 +373,8 @@ def main():
                 if cliffiest[0] is not None:
                     try:
                         knob_ab(cliffiest[0], ant, slot)
+                    except DeviceYield as y:
+                        log(f"  knobA/B yielded ({str(y)[:40]})")
                     except Exception as e:
                         log(f"  knobA/B skip ({str(e)[:40]})")
             except Exception as e:
