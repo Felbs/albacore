@@ -149,3 +149,11 @@ IQ-only dial predicts decoder MER without decoding — the Knob-of-Time sensor.
 *Caveat: patents document designed architectures, not measured NRSC-5 field
 gains; the one quantified number (~10 dB) is an 802.11a simulation. Every lever
 ships env-gated behind the replay A/B + LISTEN% harness, per project law.*
+
+## Night-shift autopsy (2026-07-19, fd=5 Hz, zero added noise)
+Stock: 20 sync-loss events (thrash). ALBACORE=1 pair: **sync held
+continuously — zero losses — but MER −7…−13 dB throughout.** The 5 Hz wall
+is therefore two stacked failures: stock dies at the SYNC layer (already
+solved by robust tracking), and the remaining failure is pure
+channel-estimation lag with lock held. Costas-gain speedup and
+decision-directed re-estimation target exactly this layer.
