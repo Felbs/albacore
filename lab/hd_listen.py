@@ -45,19 +45,40 @@ def main():
     except OSError:
         pass
 
-    nr = subprocess.Popen([NRSC5, "-r", "-", "-o", str(wav), str(a.prog)],
+    # audio path: nrsc5 wav -> stdout -> mpv stdin (a continuous stream —
+    # tailing a growing FILE stutters when the player catches the end,
+    # which the ear reads as heavy static while the file meters clean).
+    # A tee copy goes to hd_live.wav for the audio meter.
+    nr = subprocess.Popen([NRSC5, "-r", "-", "-o", "-", str(a.prog)],
                           stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=False)
+                          stderr=subprocess.PIPE, text=False)
+    mpv = subprocess.Popen([MPV, "-", "--volume=110", "--cache=yes",
+                            "--cache-secs=2", "--force-window=no"],
+                           stdin=subprocess.PIPE)
     stop = threading.Event()
 
-    def reader():
-        for line in iter(nr.stdout.readline, b""):
+    def audio_tee():
+        with open(wav, "wb") as f:
+            while True:
+                chunk = nr.stdout.read(8192)
+                if not chunk:
+                    break
+                try:
+                    mpv.stdin.write(chunk)
+                    mpv.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    pass
+                f.write(chunk)
+
+    def stat_reader():
+        for line in iter(nr.stderr.readline, b""):
             try:
                 print("  " + line.decode(errors="replace").rstrip(), flush=True)
             except Exception:
                 pass
 
-    threading.Thread(target=reader, daemon=True).start()
+    threading.Thread(target=audio_tee, daemon=True).start()
+    threading.Thread(target=stat_reader, daemon=True).start()
 
     print(f"=== live {a.mhz} MHz program {a.prog} via {Path(NRSC5).name} "
           f"(ALBACORE={os.environ.get('ALBACORE','0')}) ===", flush=True)
@@ -69,6 +90,7 @@ def main():
     import queue as _q
     iq_q = _q.Queue(maxsize=64)
     drops = [0]
+    mpv_started = True  # mpv already attached to the audio pipe
 
     def sdr_reader():
         while not stop.is_set():
@@ -97,10 +119,6 @@ def main():
             if drops[0]:
                 print(f"  [pump] queue overflow x{drops[0]}", flush=True)
                 drops[0] = 0
-            if not mpv_started and wav.exists() and wav.stat().st_size > 300_000:
-                subprocess.Popen([MPV, str(wav), "--volume=110",
-                                  "--keep-open=yes", "--force-seekable=yes"])
-                mpv_started = True
     except KeyboardInterrupt:
         pass
     stop.set()
@@ -109,6 +127,10 @@ def main():
     except Exception:
         pass
     nr.terminate()
+    try:
+        mpv.terminate()
+    except Exception:
+        pass
     sdr.deactivateStream(st)
     sdr.closeStream(st)
     print("stopped, SDR released")
