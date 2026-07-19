@@ -82,8 +82,8 @@ def rfi_probe():
         return float("nan"), float("nan")
     finally:
         os.environ["HD_ANT"] = "Antenna C"
-        os.environ["HD_IFGR"] = "30"
-        os.environ["HD_RFGAIN"] = "7"
+        os.environ.pop("HD_IFGR", None)
+        os.environ.pop("HD_RFGAIN", None)
 
 
 def three_way(cu8):
@@ -119,8 +119,6 @@ def main():
     ap.add_argument("--mhz", nargs="+", type=float, default=[93.3, 90.9, 91.9, 93.9])
     a = ap.parse_args()
     os.environ.setdefault("HD_ANT", "Antenna C")
-    os.environ.setdefault("HD_IFGR", "30")
-    os.environ.setdefault("HD_RFGAIN", "7")
     until = datetime.fromisoformat(a.until.replace("Z", "+00:00"))
     if a.start_at:
         start = datetime.fromisoformat(a.start_at.replace("Z", "+00:00"))
