@@ -131,6 +131,15 @@ def one_pair(s, rnd, null_check):
         x = cs16_load(out)
         t0 = time.time()
         lines = detect_lines(x, fs.FS_CAP, max_lines=3, thresh_db=15.0)
+        if not lines:
+            # ambient-line survey: strongest in-band line even below
+            # the 15 dB excise gate, so a no-action night still maps
+            # the ambient distribution (is the gate right, or is the
+            # night just clean?)
+            peak = detect_lines(x, fs.FS_CAP, max_lines=1, thresh_db=0.1)
+            if peak:
+                log(f"    ambient peak {peak[0][0]:+8.0f} Hz "
+                    f"{peak[0][1]:4.1f} dB (below gate)")
         verdict, eres, xrt, kept = "NO-LINES", None, float("nan"), ""
         if lines or null_check:
             for f_line, _snr in lines:
@@ -240,7 +249,10 @@ def main():
                 log(f"  {s['mhz']:5.1f} ERROR {str(e)[:90]}")
             time.sleep(a.gap_s)
         summarize()
-        time.sleep(a.round_gap_s)
+        t_gap = time.time()
+        while (time.time() - t_gap < a.round_gap_s
+               and not STOP.exists()):
+            time.sleep(5)          # stop file honored during round gap
     summarize()
     log("night A/B done - summary at " + str(SUMMARY))
 
