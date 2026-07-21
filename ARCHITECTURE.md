@@ -1,0 +1,175 @@
+# albacore — System Architecture
+
+A science-layer fork of **nrsc5** (the open HD Radio decoder). Follow the IQ signal through the C decode chain to audio and the MER / BER dials — with the ALBACORE instrumentation levers that tap the sync stage, and the Python lab that A/B-tests every specimen against the *stock* nrsc5 referee.
+
+**Solid arrows** = signal / data · **dashed** = control / telemetry / file · **thick** = major hand-offs.
+
+```mermaid
+flowchart TB
+%% ============================================================================
+%%  albacore — instrumented NRSC-5 / HD Radio decoder : System Architecture
+%%  A science-layer fork of nrsc5 (GPL-3) for FM HD Radio + AM IBOC.
+%%
+%%  Read top-to-bottom as the signal's journey:
+%%    IQ samples (cu8/cs16/cf32) -> nrsc5 C decode chain (input -> acquire ->
+%%    sync/MER -> demap -> Viterbi/RS FEC -> HDC audio) -> audio + MER/BER dials.
+%%    The ALBACORE=1 instrumentation levers tap the sync stage; a Python lab
+%%    layer captures RF, replays each specimen against the STOCK nrsc5 referee,
+%%    runs A/B campaigns, and feeds the dials / cliff ledgers / tune table.
+%%    Boxes are modules/stages; solid arrows = signal/data flow,
+%%    dashed arrows = control / telemetry / file I/O,
+%%    thick arrows = front-end spawns / major hand-offs.
+%%
+%%  This file is a living reference: keep it in sync when the chain changes.
+%% ============================================================================
+
+    %% ---------------------------------------------------------------- FRONT ENDS
+    subgraph UI["Front-ends / decoder entry"]
+        direction LR
+        CLIRUN["main.c -> nrsc5 executable<br/><i>instrumented DUT</i><br/>ALBACORE=1 build · -r IQ · -o wav<br/>FM / AM IBOC modes"]
+        LIBAPI["libnrsc5 (nrsc5.c)<br/><i>callback API</i><br/>IQ · sync · MER · BER · audio · SIS events"]
+        LIBAPI --- CLIRUN
+    end
+
+    %% ---------------------------------------------------------------- SIGNAL SOURCE
+    subgraph SRC["Signal source — IQ samples (no radio HW in this view)"]
+        direction LR
+        IQIN["IQ capture<br/>cu8 / cs16 / cf32<br/>file replay or SoapySDR stream<br/>FM native 744187.5 Hz (4x lab capture)"]
+    end
+
+    %% ---------------------------------------------------------------- C DECODE CHAIN
+    subgraph CORE["nrsc5 C decode chain — src/ (the fork's DSP core)"]
+        direction TB
+        INPUT["input.c<br/>halfband decimate + resample to native<br/>FM 1-stage · AM 5-stage<br/><i>emits nrsc5_report_iq</i>"]
+        ACQUIRE["acquire.c<br/>OFDM symbol / CP timing + coarse CFO<br/>FM conjugates input (:126/:161); AM does not<br/><i>emits nrsc5_report_sync</i>"]
+        SYNC["sync.c<br/>ref-subcarrier DBPSK track + ZF equalize<br/>per-partition gain/phase · MER compute<br/><b>emits nrsc5_report_mer = MER dial</b>"]
+        DEMAP["sync.c demod<br/>QPSK soft-bit demap of PM/PX1/PX2<br/>partition/CSI mult -> decode_push_pm"]
+        DECODE["decode.c<br/>deinterleave + Viterbi (conv_dec) + descramble<br/><i>emits nrsc5_report_ber</i>"]
+        FRAME["frame.c<br/>L1 framing · CRC8 · Reed-Solomon (rs_decode)<br/>HDLC · audio + data packet extract"]
+        OUTPUT["output.c<br/>HDC/AAC audio decode (faad2) -> PCM<br/>+ AAS: SIS metadata · album art (pids.c) · EAS"]
+
+        INPUT --> ACQUIRE --> SYNC --> DEMAP --> DECODE --> FRAME --> OUTPUT
+    end
+
+    %% ------------------------------------------------- ALBACORE INSTRUMENTATION
+    subgraph INSTR["ALBACORE levers — env-gated taps in sync.c"]
+        direction TB
+        MASTER["ALBACORE=1<br/><i>master switch</i><br/>robust track + partition weight + erase floor 2"]
+        ROBUST["ALBACORE_ROBUST_TRACK<br/>median tracking estimator (real)"]
+        PARTW["ALBACORE_PART_WEIGHT<br/>per-partition confidence mult (real)"]
+        CSI["ALBACORE_CSI<br/>per-subcarrier |G|^2 reliability (real)"]
+        MMSE{{"ALBACORE_MMSE<br/><i>MMSE eq vs ZF — regresses, experimental</i>"}}
+        ERASE{{"ALBACORE_ERASE<br/><i>partition erase floor — NOT in master, experimental</i>"}}
+        TRACKF{{"ALBACORE_TRACK_FAST<br/><i>per-symbol ref amplitude, experimental</i>"}}
+        COSTAS{{"ALBACORE_COSTAS_BW<br/><i>adaptive/fixed Costas loop BW, experimental</i>"}}
+
+        MASTER -.-> ROBUST
+        MASTER -.-> PARTW
+    end
+
+    %% ---------------------------------------------------------------- OUTPUT
+    subgraph OUT["Presentation — decoder outputs"]
+        direction LR
+        AUDIO["PCM audio<br/>WAV file / audio callback"]
+        DIALS["MER / BER / sync dials<br/>log + NRSC5_EVENT_* (main.c)"]
+        META["Station metadata<br/>SIS name · album art · EAS alerts"]
+    end
+
+    %% ------------------------------------------------- PYTHON LAB / CAMPAIGN LAYER
+    subgraph LAB["Python lab / campaign harness — lab/"]
+        direction TB
+        FIELD["hd_field_survey.py<br/>capture cs16 + stock-referee replay<br/>rank field by sync/MER/BER/audio"]
+        REFLOCK["hd_ref_lock.py<br/>DBPSK ref-subcarrier lock<br/>per-ref MER dial + |H(f,t)| waterfall"]
+        EXCISE["hd_excise.py<br/>narrowband interferer detect + notch<br/>pre-acquisition sync rescuer"]
+        NIGHTAB["hd_night_ab.py<br/>paired A/B of excision<br/>stock referee both arms · lock@50"]
+        DAYLAB["hd_day_lab2.py<br/>antenna x station x time cube<br/>gain sweeps · perfect-tune · knob A/B tripwire"]
+        REPORTS["cube_report.py · day_report.py<br/>tune_fit.py · hd_stress_test.py · hd_listen.py"]
+
+        FIELD --> REFLOCK
+        FIELD --> NIGHTAB
+        EXCISE --> NIGHTAB
+        DAYLAB --> REPORTS
+    end
+
+    %% ---------------------------------------------------------------- STATE FILES
+    subgraph STATE["Corpus + learned ledgers"]
+        direction LR
+        CORPUS[("hd_cliff corpus<br/>gr-radiotuna/lab/hd_cliff<br/>cliff specimens (cs16)")]
+        CERT[("out/cert_matrix.json<br/>cliff_walk · selective_walk")]
+        DIALCAL[("out/hf_dial_cal.json<br/>MER dial calibration vs nrsc5")]
+        ABLED[("out/night_ab.csv<br/>antenna_cube · day_lab_ab.csv")]
+        TUNETABLE[("radio_tune_table.json<br/>perfect-tune per ant/station/hour")]
+    end
+
+    %% ---------------------------------------------------------------- CONTROL PLANE
+    REFEREE["stock nrsc5.exe<br/>unmodified referee<br/><i>ground-truth sync/MER/BER/audio</i>"]
+    RADIOLOCK{{"radio_lock.py<br/>one-radio reservation<br/><i>pass100 &gt; human80 &gt; lab50 &gt; warden20</i>"}}
+
+    %% ================================================================ CROSS-EDGES
+    %% front-ends drive the core
+    CLIRUN ==>|"decode -r IQ"| INPUT
+    IQIN ==> INPUT
+
+    %% core -> outputs
+    OUTPUT ==> AUDIO
+    OUTPUT --> META
+    SYNC -.->|"MER"| DIALS
+    DECODE -.->|"BER"| DIALS
+    ACQUIRE -.->|"sync/CFO"| DIALS
+
+    %% instrumentation taps into the sync stage
+    ROBUST -.-> SYNC
+    PARTW -.-> DEMAP
+    CSI -.-> DEMAP
+    MMSE -.-> SYNC
+    ERASE -.-> DEMAP
+    TRACKF -.-> SYNC
+    COSTAS -.-> SYNC
+
+    %% lab captures RF, feeds corpus, drives both decoders
+    RADIOLOCK -.->|"reserve radio"| FIELD
+    RADIOLOCK -.-> DAYLAB
+    FIELD -.->|"write specimen"| CORPUS
+    CORPUS ==>|"replay IQ"| IQIN
+    FIELD ==>|"stock replay"| REFEREE
+    NIGHTAB ==> REFEREE
+    DAYLAB ==> REFEREE
+    NIGHTAB ==>|"instrumented run"| CLIRUN
+    DAYLAB ==>|"ALBACORE=1 A/B"| CLIRUN
+    EXCISE -.->|"notched IQ -> pre-acq (proposed ALBACORE_EXCISE)"| INPUT
+
+    %% referee + DUT dials feed the lab back
+    REFEREE -.-> FIELD
+    DIALS -.-> FIELD
+    AUDIO -.-> NIGHTAB
+
+    %% lab reads/writes learned state
+    REFLOCK -.->|write| DIALCAL
+    NIGHTAB -.->|write| ABLED
+    DAYLAB -.->|write| ABLED
+    DAYLAB -.->|write| TUNETABLE
+    FIELD -.-> CERT
+    DIALCAL -.->|calibrates| SYNC
+    TUNETABLE -.->|consulted on tune| DAYLAB
+
+    %% ---------------------------------------------------------------- STYLING
+    classDef ui       fill:#1e3a5f,stroke:#4a90d9,color:#eaf2fb,stroke-width:2px;
+    classDef hw       fill:#3d2b1f,stroke:#c98a3a,color:#f7ecde,stroke-width:2px;
+    classDef dsp      fill:#14352a,stroke:#3fa87a,color:#e6f6ee,stroke-width:1px;
+    classDef opt      fill:#14352a,stroke:#3fa87a,color:#bfe6d4,stroke-width:1px,stroke-dasharray:4 3;
+    classDef out      fill:#3a1f3d,stroke:#b45fc0,color:#f6e6f8,stroke-width:2px;
+    classDef instr    fill:#3a331a,stroke:#c9b83a,color:#f7f3de,stroke-width:1px;
+    classDef file     fill:#222,stroke:#888,color:#ddd,stroke-width:1px;
+    classDef ctrl     fill:#4a1e1e,stroke:#d95a5a,color:#f8e6e6,stroke-width:2px;
+    classDef lab      fill:#1f3a3a,stroke:#3fb8b8,color:#e6f7f7,stroke-width:1px;
+
+    class CLIRUN,LIBAPI ui;
+    class IQIN hw;
+    class INPUT,ACQUIRE,SYNC,DEMAP,DECODE,FRAME,OUTPUT dsp;
+    class MASTER,ROBUST,PARTW,CSI instr;
+    class MMSE,ERASE,TRACKF,COSTAS opt;
+    class AUDIO,DIALS,META out;
+    class FIELD,REFLOCK,EXCISE,NIGHTAB,DAYLAB,REPORTS lab;
+    class CORPUS,CERT,DIALCAL,ABLED,TUNETABLE file;
+    class REFEREE,RADIOLOCK ctrl;
+```

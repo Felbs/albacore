@@ -14,6 +14,8 @@ Part of the Tuna family:
 Same thesis every time: every decoder secretly knows how well it's
 doing — surface that truth-dial and close the loop on it.
 
+📐 **[System architecture](ARCHITECTURE.md)** — the instrumented nrsc5 decode chain, the ALBACORE levers, and the A/B lab, rendered as a diagram.
+
 ## Lineage
 
 This is a fork of **[theori-io/nrsc5](https://github.com/theori-io/nrsc5)**,
